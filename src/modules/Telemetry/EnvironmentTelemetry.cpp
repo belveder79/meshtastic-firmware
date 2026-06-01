@@ -119,6 +119,10 @@ extern void drawCommonHeader(OLEDDisplay *display, int16_t x, int16_t y, const c
 #include "Sensor/T1000xSensor.h"
 #endif
 
+#ifdef EE08_SENSOR_EN
+#include "Sensor/EE08Sensor.h"
+#endif
+
 #ifdef SENSECAP_INDICATOR
 #include "Sensor/IndicatorSensor.h"
 #endif
@@ -170,6 +174,12 @@ void EnvironmentTelemetryModule::i2cScanFinished(ScanI2C *i2cScanner)
     addSensor<RCWL9620Sensor>(i2cScanner, ScanI2C::DeviceType::RCWL9620);
     addSensor<CGRadSensSensor>(i2cScanner, ScanI2C::DeviceType::CGRADSENS);
 #endif
+
+#ifdef EE08_SENSOR_EN
+    // Not a real I2C device
+    addSensor<EE08Sensor>(i2cScanner, ScanI2C::DeviceType::NONE);
+#endif
+
 #endif
 
 #if !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR_EXTERNAL
