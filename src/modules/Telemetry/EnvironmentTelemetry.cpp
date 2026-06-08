@@ -126,6 +126,14 @@ extern void drawCommonHeader(OLEDDisplay *display, int16_t x, int16_t y, const c
 #include "Sensor/T1000xSensor.h"
 #endif
 
+#ifdef REEDCOUNTER_SENSOR_EN
+#include "Sensor/ReedCounterSensor.h"
+#endif
+
+#ifdef EE08_SENSOR_EN
+#include "Sensor/EE08Sensor.h"
+#endif
+
 #ifdef SENSECAP_INDICATOR
 #include "Sensor/IndicatorSensor.h"
 #endif
@@ -193,6 +201,12 @@ void EnvironmentTelemetryModule::i2cScanFinished(ScanI2C *i2cScanner)
     addSensor<RCWL9620Sensor>(i2cScanner, ScanI2C::DeviceType::RCWL9620);
     addSensor<CGRadSensSensor>(i2cScanner, ScanI2C::DeviceType::CGRADSENS);
 #endif
+
+#ifdef EE08_SENSOR_EN
+    // Not a real I2C device
+    addSensor<EE08Sensor>(i2cScanner, ScanI2C::DeviceType::NONE);
+#endif
+
 #endif
 
 #if !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR_EXTERNAL
@@ -268,6 +282,10 @@ void EnvironmentTelemetryModule::i2cScanFinished(ScanI2C *i2cScanner)
 #endif
 #if __has_include(<BH1750_WE.h>)
     addSensor<BH1750Sensor>(i2cScanner, ScanI2C::DeviceType::BH1750);
+#endif
+
+#ifdef REEDCOUNTER_SENSOR_EN
+    addSensor<ReedCounterSensor>(i2cScanner, ScanI2C::DeviceType::NONE);
 #endif
 
 #endif
@@ -636,6 +654,8 @@ bool EnvironmentTelemetryModule::sendTelemetry(NodeNum dest, bool phoneOnly)
 
         LOG_INFO("Send: wind speed=%fm/s, direction=%d degrees, weight=%fkg", m.variant.environment_metrics.wind_speed,
                  m.variant.environment_metrics.wind_direction, m.variant.environment_metrics.weight);
+
+        LOG_INFO("Send: rainfall=%fmm/m^2", m.variant.environment_metrics.rainfall_24h);
 
         LOG_INFO("Send: radiation=%fµR/h", m.variant.environment_metrics.radiation);
 
