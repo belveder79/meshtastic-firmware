@@ -93,6 +93,7 @@ static const uint8_t A7 = PIN_A7;
 
 #define PIN_AREF (2)
 #define PIN_NFC1 (9)
+#define WB_IO6 (10)
 #define WB_IO5 PIN_NFC1
 #define WB_IO4 (4)
 #define PIN_NFC2 (10)
@@ -291,6 +292,9 @@ SO GPIO 39/TXEN MAY NOT BE DEFINED FOR SUCCESSFUL OPERATION OF THE SX1262 - TG
 #define PIN_ETHERNET_SS PIN_EINK_CS
 #define ETH_SPI_PORT SPI1
 #define AQ_SET_PIN 10
+
+#define RAK13010_SENSOR_EN
+#define RAK13010_SENSOR_ID 9
 
 #ifdef __cplusplus
 }

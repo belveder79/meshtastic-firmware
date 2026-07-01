@@ -81,6 +81,10 @@ extern void drawCommonHeader(OLEDDisplay *display, int16_t x, int16_t y, const c
 #include "Sensor/RAK12035Sensor.h"
 #endif
 
+#if defined(RAK13010_SENSOR_EN) && defined(RAK_4631) && RAK_4631 == 1
+#include "Sensor/RAK13010Sensor.h"
+#endif
+
 #if __has_include(<Adafruit_VEML7700.h>)
 #include "Sensor/VEML7700Sensor.h"
 #endif
@@ -286,6 +290,10 @@ void EnvironmentTelemetryModule::i2cScanFinished(ScanI2C *i2cScanner)
 
 #ifdef REEDCOUNTER_SENSOR_EN
     addSensor<ReedCounterSensor>(i2cScanner, ScanI2C::DeviceType::NONE);
+#endif
+
+#if defined(RAK13010_SENSOR_EN) && defined(RAK_4631) && RAK_4631 == 1
+    addSensor<RAK13010Sensor>(i2cScanner, ScanI2C::DeviceType::NONE);
 #endif
 
 #endif
