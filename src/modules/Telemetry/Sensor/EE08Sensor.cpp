@@ -6,15 +6,20 @@
 #include "EE08Sensor.h"
 #include "TelemetrySensor.h"
 
-#define GPIO_OUTPUT_PIN_SEL  (1ULL<<EE08_SENSOR_SCL_PIN)
-#define GPIO_INPUT_PIN_SEL  (1ULL<<EE08_SENSOR_SDA_PIN)
+#if !defined(RAK_4631)
+  #define GPIO_OUTPUT_PIN_SEL  (1ULL<<EE08_SENSOR_SCL_PIN)
+  #define GPIO_INPUT_PIN_SEL  (1ULL<<EE08_SENSOR_SDA_PIN)
+#endif 
 // Definitions
 //-----------------------------------------------------------------------------
 #define ACK 0 
 #define NAK 1
 #define RETRYS 3
-#define DELAY_FACTOR 300 // 600 matches approx 1kHz // 300 matches 2kHz // 150 matches 4kHz
-
+#if !defined(RAK_4631)
+  #define DELAY_FACTOR 300 // 600 matches approx 1kHz // 300 matches 2kHz // 150 matches 4kHz
+#else
+  #define DELAY_FACTOR 100
+#endif
 st_E2_Return knl_E2bus_readByteFromSlave(unsigned char ControlByte)
 // read byte from slave with controlbyte
 {
@@ -89,6 +94,9 @@ void knl_E2bus_sendByte(unsigned char value) // send byte to E2-Interface
 }
 unsigned char knl_E2bus_readByte(void) // read Byte from E2-Interface
 {
+#if defined(RAK_4631) && RAK_4631 == 1
+    pinMode(EE08_SENSOR_SDA_PIN, INPUT);
+#endif
     unsigned char data_in = 0x00;
     unsigned char mask = 0x80;
     for (mask = 0x80; mask > 0; mask >>= 1)
@@ -104,10 +112,16 @@ unsigned char knl_E2bus_readByte(void) // read Byte from E2-Interface
         knl_E2bus_delay(15);
         knl_E2bus_clear_SCL();
     }
+#if defined(RAK_4631) && RAK_4631 == 1
+    pinMode(EE08_SENSOR_SDA_PIN, OUTPUT_S0S1);
+#endif    
     return data_in;
 }
 char knl_E2bus_check_ack(void) // check for acknowledge
 {
+#if defined(RAK_4631) && RAK_4631 == 1
+    pinMode(EE08_SENSOR_SDA_PIN, INPUT);
+#endif
     unsigned char input;
     knl_E2bus_clear_SCL();
     knl_E2bus_delay(30);
@@ -115,6 +129,9 @@ char knl_E2bus_check_ack(void) // check for acknowledge
     knl_E2bus_delay(15);
     input = knl_E2bus_read_SDA();
     knl_E2bus_delay(15);
+#if defined(RAK_4631) && RAK_4631 == 1
+    pinMode(EE08_SENSOR_SDA_PIN, OUTPUT_S0S1);
+#endif
     // SDA = LOW ==> ACK, SDA = HIGH ==> NAK
     return (input == NAK);
 }
@@ -153,6 +170,49 @@ void knl_E2bus_delay(unsigned int count) // knl_E2bus_delay function
     while (--count2 != 0)
         ;
 }
+
+#if defined(RAK_4631) && RAK_4631 == 1
+// adapt this code for your target processor !!! Value = 1 ==> Physical Signal is High, Value = 0 == > Physical Signal is Low 
+void knl_E2bus_set_SDA(void)
+{
+    digitalWrite(EE08_SENSOR_SDA_PIN, 1); // set port-pin (SDA)
+}
+void knl_E2bus_clear_SDA(void)
+{
+    digitalWrite(EE08_SENSOR_SDA_PIN, 0); // clear port-pin (SDA)
+}
+unsigned char knl_E2bus_read_SDA(void)
+{
+    return digitalRead(EE08_SENSOR_SDA_PIN); // read SDA-pin status 
+}
+void knl_E2bus_set_SCL(void)
+{
+    digitalWrite(EE08_SENSOR_SCL_PIN, 1); // set port-pin (SCL)
+}
+void knl_E2bus_clear_SCL(void)
+{
+    digitalWrite(EE08_SENSOR_SCL_PIN, 0); // clear port-pin (SCL)
+}
+
+void knl_init()
+{
+    // IF RAK13010 IS NOT INITIALIZED WE NEED TO ENABLE THE 12V OUTPUT RAIL ON THE RAK13010 FOR 12V 
+    // ON THE EE08 SENSOR!
+#if !defined(RAK13010_SENSOR_EN)
+  pinMode(WB_IO2, OUTPUT);
+  digitalWrite(WB_IO2, HIGH);  // Power the sensors.
+#endif
+
+    pinMode(EE08_SENSOR_SCL_PIN, OUTPUT_S0S1);
+    pinMode(EE08_SENSOR_SDA_PIN, OUTPUT_S0S1);
+    vTaskDelay(100);
+
+    knl_E2bus_set_SDA();
+    knl_E2bus_set_SCL();
+}
+
+#else // RAK4631
+
 // adapt this code for your target processor !!! Value = 1 ==> Physical Signal is High, Value = 0 == > Physical Signal is Low 
 void knl_E2bus_set_SDA(void)
 {
@@ -207,6 +267,8 @@ void knl_init()
     knl_E2bus_set_SCL();
 }
 
+#endif // RAK4631
+
 void fl_init()
 {
     knl_init();
@@ -251,11 +313,11 @@ float fl_E2bus_Read_RH(void) // Read Measurement Value 1 (relative Humidity [%RH
             RH = (RH_LB + (float)(RH_HB) * 256) / 100;
         }
         else
-            printf("  Status high byte failed!\n");
+            LOG_ERROR("===================== Status high byte failed!\n");
     }
     else
     {
-        printf("  Status low byte failed!\n");
+        LOG_ERROR("===================== Status low byte failed!\n");
     }
     return RH;
 }
@@ -380,38 +442,38 @@ EE08Sensor::EE08Sensor() : TelemetrySensor(meshtastic_TelemetrySensorType_SENSOR
 
 bool EE08Sensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
 {
-    LOG_INFO("===================== Init sensor: %s", sensorName);
+    LOG_DEBUG("===================== Init sensor: %s", sensorName);
 
     fl_init();
 
     unsigned int SensorType = fl_E2bus_Read_SensorType(); // read Sensortype from E2-Interface
-    LOG_INFO("===================== Sensortype: %u",SensorType);
+    LOG_DEBUG("===================== Sensortype: %u",SensorType);
 
     // read Sensor Subtype from E2-Interface
     unsigned char SensorSubType = fl_E2bus_Read_SensorSubType();
-    LOG_INFO("===================== SensorSubtype: %u",SensorSubType);
+    LOG_DEBUG("===================== SensorSubtype: %u",SensorSubType);
     
     unsigned char AvPhMes = fl_E2bus_Read_AvailablePhysicalMeasurements();
     // read available physical Measurements from
-    LOG_INFO("===================== Available: %d",AvPhMes);
+    LOG_DEBUG("===================== Available: %d",AvPhMes);
 
     unsigned char Status = fl_E2bus_Read_Status();
-    LOG_INFO("===================== Status: %d\n",Status);
+    LOG_DEBUG("===================== Status: %d\n",Status);
 
-    return true;
+    return SensorType == 21768;
 }
 
 float EE08Sensor::getHumidity()
 {
     float humidity = fl_E2bus_Read_RH(); // Read Measurement Value 1 (rel.v Humidity [%RH])
-    LOG_INFO("Humidity: %.3f",humidity);
+    LOG_DEBUG("===================== Humidity: %.3f",humidity);
     return humidity;
 }
 
 float EE08Sensor::getTemp()
 {
     float temperature = fl_E2bus_Read_Temp(); // Read Measurement Value 2 (Temperature [°C])
-    LOG_INFO("Temperature: %.3f",temperature);
+    LOG_DEBUG("===================== Temperature: %.3f",temperature);
     return temperature;
 }
 

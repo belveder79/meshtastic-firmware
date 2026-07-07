@@ -1,6 +1,6 @@
 #include "configuration.h"
 
-#if !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR
+#if !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR && defined(RAK13010_SENSOR_EN)
 
 #include "../mesh/generated/meshtastic/telemetry.pb.h"
 #include "TelemetrySensor.h"

@@ -182,6 +182,15 @@ void EnvironmentTelemetryModule::i2cScanFinished(ScanI2C *i2cScanner)
     addSensor<CGRadSensSensor>(i2cScanner, ScanI2C::DeviceType::CGRADSENS);
 #endif
 
+#if defined(RAK13010_SENSOR_EN) && defined(RAK_4631) && RAK_4631 == 1
+    // Not a real I2C device
+    addSensor<RAK13010Sensor>(i2cScanner, ScanI2C::DeviceType::NONE);
+#endif
+
+#ifdef REEDCOUNTER_SENSOR_EN
+    addSensor<ReedCounterSensor>(i2cScanner, ScanI2C::DeviceType::NONE);
+#endif
+
 #ifdef EE08_SENSOR_EN
     // Not a real I2C device
     addSensor<EE08Sensor>(i2cScanner, ScanI2C::DeviceType::NONE);
@@ -262,14 +271,6 @@ void EnvironmentTelemetryModule::i2cScanFinished(ScanI2C *i2cScanner)
 #endif
 #if __has_include(<BH1750_WE.h>)
     addSensor<BH1750Sensor>(i2cScanner, ScanI2C::DeviceType::BH1750);
-#endif
-
-#ifdef REEDCOUNTER_SENSOR_EN
-    addSensor<ReedCounterSensor>(i2cScanner, ScanI2C::DeviceType::NONE);
-#endif
-
-#if defined(RAK13010_SENSOR_EN) && defined(RAK_4631) && RAK_4631 == 1
-    addSensor<RAK13010Sensor>(i2cScanner, ScanI2C::DeviceType::NONE);
 #endif
 
 #endif

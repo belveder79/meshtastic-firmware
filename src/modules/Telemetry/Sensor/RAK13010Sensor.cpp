@@ -20,7 +20,7 @@ RAK13010Sensor::RAK13010Sensor() : TelemetrySensor(meshtastic_TelemetrySensorTyp
 
 bool RAK13010Sensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
 {
-  LOG_INFO("Init sensor: %s", sensorName);
+  LOG_DEBUG("Init sensor: %s", sensorName);
 
   pinMode(WB_IO2, OUTPUT);
   digitalWrite(WB_IO2, HIGH);  // Power the sensors.
@@ -40,7 +40,7 @@ bool RAK13010Sensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
   boolean sdiMsgReady = false;
   String sdiMsgStr = "";
   
-  int timeoutCnt = 10000;
+  int timeoutCnt = 5000;
   // loop emulation
   while(serialMsgRflag && timeoutCnt-- > 0)
   {
@@ -89,7 +89,7 @@ bool RAK13010Sensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
     }
     vTaskDelay(pdMS_TO_TICKS(1));
   }
-  return true;
+  return timeoutCnt > 0;
 }
 
 int getIndices(const String sdiMsgStr, const int expected, int &idx0, int &idx1, int &idx2, int &idx3)

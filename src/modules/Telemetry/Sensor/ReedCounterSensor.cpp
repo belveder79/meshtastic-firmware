@@ -11,56 +11,83 @@ ReedCounterSensor::ReedCounterSensor() : TelemetrySensor(meshtastic_TelemetrySen
     m_currentCount = 0;
 }
 
-#ifdef OLDPCNT
 static xQueueHandle pcnt_event_queue;   // A queue to handle pulse counter events
-/* A sample structure to pass events from the PCNT
- * interrupt handler to the main program.
- */
-typedef struct {
-    int unit;  // the PCNT unit that originated an interrupt
-    uint32_t status; // information on the event type that caused the interrupt
-} pcnt_evt_t;
 
-/* Decode what PCNT's unit originated an interrupt
- * and pass this information together with the event type
- * the main program using a queue.
- */
-static void IRAM_ATTR pcnt_example_intr_handler(void *arg)
+#if defined(RAK_4631) && RAK_4631 == 1
+
+// Interrupt Service Routine (ISR)
+void pcnt_interrupt_handler() 
 {
-    pcnt_unit_t pcnt_unit = (pcnt_unit_t)((int)arg);
-    pcnt_evt_t evt;
-    evt.unit = pcnt_unit;
-    /* Save the PCNT event type that caused an interrupt
-       to pass it to the main program */
-    pcnt_get_event_status(pcnt_unit, &evt.status);
-    xQueueSendFromISR(pcnt_event_queue, &evt, NULL);
+  // Static variable retains its value between ISR executions
+  static uint32_t lastInterruptTime = 0; 
+  uint32_t currentTime = millis();
+
+  // If the pulse arrives too fast, skip it (it's switch bounce)
+  if (currentTime - lastInterruptTime > REEDCOUNTER_PCNT_HIGH_LIMIT) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    
+    // Send the valid pulse timestamp to the queue
+    xQueueSendFromISR(pcnt_event_queue, &currentTime, &xHigherPriorityTaskWoken);
+    
+    lastInterruptTime = currentTime; // Update the lockout timer
+
+    if (xHigherPriorityTaskWoken) {
+      portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+  }
 }
 
-#else
-static QueueHandle_t pcnt_event_queue;
+#else // RAK4631
 
-// Interrupt callback function triggered when the pulse count threshold is reached
-static bool pcnt_on_reach_cb(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx) 
-{
-    BaseType_t high_task_wakeup = pdFALSE;
-    QueueHandle_t queue = (QueueHandle_t)user_ctx;
-    
-    // Send the current count/event to the FreeRTOS queue
-    xQueueSendFromISR(queue, &(edata->watch_point_value), &high_task_wakeup);
-    
-    return (high_task_wakeup == pdTRUE);
-}
+  #ifdef OLDPCNT
+    /* A sample structure to pass events from the PCNT
+    * interrupt handler to the main program.
+    */
+    typedef struct {
+        int unit;  // the PCNT unit that originated an interrupt
+        uint32_t status; // information on the event type that caused the interrupt
+    } pcnt_evt_t;
+
+    /* Decode what PCNT's unit originated an interrupt
+    * and pass this information together with the event type
+    * the main program using a queue.
+    */
+    static void IRAM_ATTR pcnt_interrupt_handler(void *arg)
+    {
+        pcnt_unit_t pcnt_unit = (pcnt_unit_t)((int)arg);
+        pcnt_evt_t evt;
+        evt.unit = pcnt_unit;
+        /* Save the PCNT event type that caused an interrupt
+        to pass it to the main program */
+        pcnt_get_event_status(pcnt_unit, &evt.status);
+        xQueueSendFromISR(pcnt_event_queue, &evt, NULL);
+    }
+
+  #else
+    // Interrupt callback function triggered when the pulse count threshold is reached
+    static bool pcnt_on_reach_cb(pcnt_unit_handle_t unit, const pcnt_watch_event_data_t *edata, void *user_ctx) 
+    {
+        BaseType_t high_task_wakeup = pdFALSE;
+        QueueHandle_t queue = (QueueHandle_t)user_ctx;
+        
+        // Send the current count/event to the FreeRTOS queue
+        xQueueSendFromISR(queue, &(edata->watch_point_value), &high_task_wakeup);
+        
+        return (high_task_wakeup == pdTRUE);
+    }
 #endif
+
+#endif // RAK4631
 
 /* Contact detection task */
 static void checkreed(void *arg)
 {
-    LOG_INFO("===================== Contact sensor monitoring started");
+    LOG_DEBUG("===================== Contact sensor monitoring started");
     ReedCounterSensor* instance = static_cast<ReedCounterSensor*>(arg);
     int count_val;
     while (1) {
         if (xQueueReceive(pcnt_event_queue, &count_val, portMAX_DELAY)) {
-            LOG_INFO("Reed Switch Triggered! Event threshold reached.");
+            LOG_DEBUG("Reed Switch Triggered! Event threshold reached.");
             instance->increaseCounterAndResetHandle();
         }
         vTaskDelay(pdMS_TO_TICKS(1000));  /* Check every 1000ms */
@@ -70,20 +97,42 @@ static void checkreed(void *arg)
 void ReedCounterSensor::increaseCounterAndResetHandle()
 {
     m_currentCount++;
-#ifdef OLDPCNT
-    pcnt_counter_pause(m_pcnt_unit);
-    pcnt_counter_clear(m_pcnt_unit);
-    pcnt_counter_resume(m_pcnt_unit);
-#else
-    // Clear the counter so we wait for the next pulse event
-    pcnt_unit_clear_count(m_pcnt_unit);
-#endif
+
+#if defined(RAK_4631) && RAK_4631 == 1
+
+#else // RAK4631
+  #ifdef OLDPCNT
+      pcnt_counter_pause(m_pcnt_unit);
+      pcnt_counter_clear(m_pcnt_unit);
+      pcnt_counter_resume(m_pcnt_unit);
+  #else
+      // Clear the counter so we wait for the next pulse event
+      pcnt_unit_clear_count(m_pcnt_unit);
+  #endif
+#endif // RAK4631
 }
 
 bool ReedCounterSensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
 {
-    LOG_INFO("===================== Init sensor: %s", sensorName);
+  LOG_DEBUG("===================== Init sensor: %s", sensorName);
 
+#if defined(RAK_4631) && RAK_4631 == 1
+
+  // Create the background worker task
+  xTaskCreate(checkreed, "reed_check", 2048, this, 1, &m_Handle);
+
+  // 1. Create a Queue to pass events from ISR to the main task
+  pcnt_event_queue = xQueueCreate(10, sizeof(int));
+  if (pcnt_event_queue == NULL) {
+    LOG_ERROR("===================== Queue creation failed");
+    return false;
+  }
+
+  pinMode(REEDCOUNTER_GPIO, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(REEDCOUNTER_GPIO), pcnt_interrupt_handler, FALLING);
+    
+  LOG_DEBUG("===================== Monitoring Reed Switch...");
+#else // RAK4631
     // 1. Create a Queue to pass events from ISR to the main task
     pcnt_event_queue = xQueueCreate(10, sizeof(int));
     if (pcnt_event_queue == NULL) {
@@ -91,7 +140,7 @@ bool ReedCounterSensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
         return false;
     }
 
-#ifdef OLDPCNT
+  #ifdef OLDPCNT
     m_pcnt_unit = PCNT_UNIT_0;
 
     /* Prepare configuration for the PCNT unit */
@@ -137,7 +186,7 @@ bool ReedCounterSensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
 
     /* Install interrupt service and add isr callback handler */
     pcnt_isr_service_install(0);
-    pcnt_isr_handler_add(m_pcnt_unit, pcnt_example_intr_handler, (void *)m_pcnt_unit);
+    pcnt_isr_handler_add(m_pcnt_unit, pcnt_interrupt_handler, (void *)m_pcnt_unit);
 
     /* Everything is set up, now go to counting */
     pcnt_counter_resume(m_pcnt_unit);
@@ -183,8 +232,8 @@ bool ReedCounterSensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
     ESP_ERROR_CHECK(pcnt_unit_clear_count(m_pcnt_unit));
     ESP_ERROR_CHECK(pcnt_unit_start(m_pcnt_unit));
 #endif
-    LOG_INFO("===================== Monitoring Reed Switch...");
     xTaskCreate(checkreed, "reed_check", 4096, this, 10, &m_Handle);
+#endif // RAK4631
 
     return true;
 }
