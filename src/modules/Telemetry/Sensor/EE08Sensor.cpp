@@ -18,7 +18,7 @@
 #if !defined(RAK_4631)
   #define DELAY_FACTOR 300 // 600 matches approx 1kHz // 300 matches 2kHz // 150 matches 4kHz
 #else
-  #define DELAY_FACTOR 100
+  #define DELAY_FACTOR 150
 #endif
 st_E2_Return knl_E2bus_readByteFromSlave(unsigned char ControlByte)
 // read byte from slave with controlbyte
@@ -479,16 +479,19 @@ float EE08Sensor::getTemp()
 
 bool EE08Sensor::getMetrics(meshtastic_Telemetry *measurement)
 {
+
+    fl_E2bus_Read_Status();
     
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
     measurement->variant.environment_metrics.has_temperature = true;
     measurement->variant.environment_metrics.has_relative_humidity = true;
 
     measurement->variant.environment_metrics.temperature = getTemp();
     measurement->variant.environment_metrics.relative_humidity = getHumidity();
     
-    fl_E2bus_Read_Status();
-    
-    return true;
+    return measurement->variant.environment_metrics.temperature > -299 && 
+            measurement->variant.environment_metrics.relative_humidity > -1;
 }
 
 #endif
