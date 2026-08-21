@@ -205,7 +205,7 @@ void knl_init()
 
     pinMode(EE08_SENSOR_SCL_PIN, OUTPUT_S0S1);
     pinMode(EE08_SENSOR_SDA_PIN, OUTPUT_S0S1);
-    vTaskDelay(100);
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
     knl_E2bus_set_SDA();
     knl_E2bus_set_SCL();
@@ -482,7 +482,7 @@ bool EE08Sensor::getMetrics(meshtastic_Telemetry *measurement)
 
     fl_E2bus_Read_Status();
     
-    vTaskDelay(pdMS_TO_TICKS(2000));
+    vTaskDelay(pdMS_TO_TICKS(4000));
 
     measurement->variant.environment_metrics.has_temperature = true;
     measurement->variant.environment_metrics.has_relative_humidity = true;
