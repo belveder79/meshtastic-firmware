@@ -527,14 +527,47 @@ bool RAK13010Sensor::getMetrics(meshtastic_Telemetry *measurement)
       {
         case SDISensorType::STEVENS:
         {       
+          // maximum is 4 sensors for stephenswaters
           Stevens* sensorreadings = reinterpret_cast<Stevens*>(sdiSensor);  
           if(sensorreadings->m_readOK)
           {
-            measurement->variant.environment_metrics.has_soil_temperature = true;
-            measurement->variant.environment_metrics.has_soil_moisture = true;
-
-            measurement->variant.environment_metrics.soil_temperature = sensorreadings->m_temperature_G;
-            measurement->variant.environment_metrics.soil_moisture = sensorreadings->m_soil_moisture_F;
+            // 01 is already occupied, so use another definition
+            if(measurement->variant.environment_metrics.has_swhp_soil_temperature_01)
+            {
+              // 02 is already occupied, so use another definition
+              if(measurement->variant.environment_metrics.has_swhp_soil_temperature_02)
+              {
+                // 03 is already occupied, so use another definition
+                if(measurement->variant.environment_metrics.has_swhp_soil_temperature_03)
+                {
+                  measurement->variant.environment_metrics.has_swhp_soil_temperature_04 = true;
+                  measurement->variant.environment_metrics.has_swhp_soil_moisture_04 = true;
+                  measurement->variant.environment_metrics.swhp_soil_temperature_04 = sensorreadings->m_temperature_G;
+                  measurement->variant.environment_metrics.swhp_soil_moisture_04 = sensorreadings->m_soil_moisture_F;  
+                }
+                else
+                {
+                  measurement->variant.environment_metrics.has_swhp_soil_temperature_03 = true;
+                  measurement->variant.environment_metrics.has_swhp_soil_moisture_03 = true;
+                  measurement->variant.environment_metrics.swhp_soil_temperature_03 = sensorreadings->m_temperature_G;
+                  measurement->variant.environment_metrics.swhp_soil_moisture_03 = sensorreadings->m_soil_moisture_F;                
+                }
+              }
+              else
+              {
+                measurement->variant.environment_metrics.has_swhp_soil_temperature_02 = true;
+                measurement->variant.environment_metrics.has_swhp_soil_moisture_02 = true;
+                measurement->variant.environment_metrics.swhp_soil_temperature_02 = sensorreadings->m_temperature_G;
+                measurement->variant.environment_metrics.swhp_soil_moisture_02 = sensorreadings->m_soil_moisture_F;                
+              }
+            }
+            else
+            {
+              measurement->variant.environment_metrics.has_swhp_soil_temperature_01 = true;
+              measurement->variant.environment_metrics.has_swhp_soil_moisture_01 = true;
+              measurement->variant.environment_metrics.swhp_soil_temperature_01 = sensorreadings->m_temperature_G;
+              measurement->variant.environment_metrics.swhp_soil_moisture_01 = sensorreadings->m_soil_moisture_F;
+            }
           }
           break;
         }

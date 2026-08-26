@@ -666,6 +666,9 @@ bool EnvironmentTelemetryModule::sendTelemetry(NodeNum dest, bool phoneOnly)
         LOG_INFO("Send: soil_temperature=%f, soil_moisture=%u", m.variant.environment_metrics.soil_temperature,
                  m.variant.environment_metrics.soil_moisture);
 
+        LOG_INFO("Send: swhp_soil_temperature_01=%f, swhp_soil_moisture_01=%f", m.variant.environment_metrics.swhp_soil_temperature_01,
+                 m.variant.environment_metrics.swhp_soil_moisture_01);
+
         meshtastic_MeshPacket *p = allocDataProtobuf(m);
         p->to = dest;
         p->decoded.want_response = false;

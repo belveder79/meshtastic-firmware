@@ -139,6 +139,56 @@ std::string MeshPacketSerializer::JsonSerialize(const meshtastic_MeshPacket *mp,
                     if (decoded->variant.environment_metrics.has_soil_temperature) {
                         msgPayload["soil_temperature"] = new JSONValue(decoded->variant.environment_metrics.soil_temperature);
                     }
+                    // EE08 definitions
+                    if (decoded->variant.environment_metrics.has_ee08_relative_humidity_01) {
+                        msgPayload["ee08_relative_humidity_01"] = new JSONValue(decoded->variant.environment_metrics.ee08_relative_humidity_01);
+                    }
+                    if (decoded->variant.environment_metrics.has_ee08_temperature_01) {
+                        msgPayload["ee08_temperature_01"] = new JSONValue(decoded->variant.environment_metrics.ee08_temperature_01);
+                    } 
+                    if (decoded->variant.environment_metrics.has_ee08_relative_humidity_02) {
+                        msgPayload["ee08_relative_humidity_02"] = new JSONValue(decoded->variant.environment_metrics.ee08_relative_humidity_02);
+                    }
+                    if (decoded->variant.environment_metrics.has_ee08_temperature_02) {
+                        msgPayload["ee08_temperature_02"] = new JSONValue(decoded->variant.environment_metrics.ee08_temperature_02);
+                    } 
+                    if (decoded->variant.environment_metrics.has_ee08_relative_humidity_03) {
+                        msgPayload["ee08_relative_humidity_03"] = new JSONValue(decoded->variant.environment_metrics.ee08_relative_humidity_03);
+                    }
+                    if (decoded->variant.environment_metrics.has_ee08_temperature_03) {
+                        msgPayload["ee08_temperature_03"] = new JSONValue(decoded->variant.environment_metrics.ee08_temperature_03);
+                    } 
+                    if (decoded->variant.environment_metrics.has_ee08_relative_humidity_04) {
+                        msgPayload["ee08_relative_humidity_04"] = new JSONValue(decoded->variant.environment_metrics.ee08_relative_humidity_04);
+                    }
+                    if (decoded->variant.environment_metrics.has_ee08_temperature_04) {
+                        msgPayload["ee08_temperature_04"] = new JSONValue(decoded->variant.environment_metrics.ee08_temperature_04);
+                    }    
+                    // Stephens Waters definitions:
+                    if (decoded->variant.environment_metrics.has_swhp_soil_temperature_01) {
+                        msgPayload["swhp_soil_temperature_01"] = new JSONValue(decoded->variant.environment_metrics.swhp_soil_temperature_01);
+                    }
+                    if (decoded->variant.environment_metrics.has_swhp_soil_moisture_01) {
+                        msgPayload["swhp_soil_moisture_01"] = new JSONValue(decoded->variant.environment_metrics.swhp_soil_moisture_01);
+                    }
+                    if (decoded->variant.environment_metrics.has_swhp_soil_temperature_02) {
+                        msgPayload["swhp_soil_temperature_02"] = new JSONValue(decoded->variant.environment_metrics.swhp_soil_temperature_02);
+                    }
+                    if (decoded->variant.environment_metrics.has_swhp_soil_moisture_02) {
+                        msgPayload["swhp_soil_moisture_02"] = new JSONValue(decoded->variant.environment_metrics.swhp_soil_moisture_02);
+                    }
+                    if (decoded->variant.environment_metrics.has_swhp_soil_temperature_03) {
+                        msgPayload["swhp_soil_temperature_03"] = new JSONValue(decoded->variant.environment_metrics.swhp_soil_temperature_03);
+                    }
+                    if (decoded->variant.environment_metrics.has_swhp_soil_moisture_03) {
+                        msgPayload["swhp_soil_moisture_03"] = new JSONValue(decoded->variant.environment_metrics.swhp_soil_moisture_03);
+                    }
+                    if (decoded->variant.environment_metrics.has_swhp_soil_temperature_04) {
+                        msgPayload["swhp_soil_temperature_04"] = new JSONValue(decoded->variant.environment_metrics.swhp_soil_temperature_04);
+                    }
+                    if (decoded->variant.environment_metrics.has_swhp_soil_moisture_04) {
+                        msgPayload["swhp_soil_moisture_04"] = new JSONValue(decoded->variant.environment_metrics.swhp_soil_moisture_04);
+                    }
                 } else if (decoded->which_variant == meshtastic_Telemetry_air_quality_metrics_tag) {
                     if (decoded->variant.air_quality_metrics.has_pm10_standard) {
                         msgPayload["pm10"] = new JSONValue((unsigned int)decoded->variant.air_quality_metrics.pm10_standard);

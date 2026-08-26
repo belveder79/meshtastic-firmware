@@ -479,19 +479,64 @@ float EE08Sensor::getTemp()
 
 bool EE08Sensor::getMetrics(meshtastic_Telemetry *measurement)
 {
-
     fl_E2bus_Read_Status();
     
     vTaskDelay(pdMS_TO_TICKS(4000));
 
-    measurement->variant.environment_metrics.has_temperature = true;
-    measurement->variant.environment_metrics.has_relative_humidity = true;
+    /*
+    // TODO: ASSUME HERE THAT WE HAVE A LIST OF SENSORS (NOT JUST ONE, SO WE RUN THROUGH ALL THE EE08 SENSORS IN ORDER)
+    // SEE IMPLEMENATION IN RAK13010Sensors.h/cpp
+    if(sensorreadings->m_readOK)
+        {
+        // 01 is already occupied, so use another definition
+        if(measurement->variant.environment_metrics.has_ee08_temperature_01)
+        {
+            // 02 is already occupied, so use another definition
+            if(measurement->variant.environment_metrics.has_ee08_temperature_02)
+            {
+                // 03 is already occupied, so use another definition
+                if(measurement->variant.environment_metrics.has_ee08_temperature_03)
+                {
+                    measurement->variant.environment_metrics.has_ee08_temperature_04 = true;
+                    measurement->variant.environment_metrics.has_ee08_relative_humidity_04 = true;
+                    measurement->variant.environment_metrics.ee08_temperature_04 = sensorreadings->m_temperature;
+                    measurement->variant.environment_metrics.ee08_relative_humidity_04 = sensorreadings->m_humidity;  
+                }
+                else
+                {
+                    measurement->variant.environment_metrics.has_ee08_temperature_03 = true;
+                    measurement->variant.environment_metrics.has_ee08_relative_humidity_03 = true;
+                    measurement->variant.environment_metrics.ee08_temperature_03 = sensorreadings->m_temperature;
+                    measurement->variant.environment_metrics.ee08_relative_humidity_03 = sensorreadings->m_humidity;                
+                }
+            }
+            else
+            {
+            measurement->variant.environment_metrics.has_ee08_temperature_02 = true;
+            measurement->variant.environment_metrics.has_ee08_relative_humidity_02 = true;
+            measurement->variant.environment_metrics.ee08_temperature_02 = sensorreadings->m_temperature;
+            measurement->variant.environment_metrics.ee08_relative_humidity_02 = sensorreadings->m_humidity;                
+            }
+        }
+        else
+        {
+            measurement->variant.environment_metrics.has_ee08_temperature_01 = true;
+            measurement->variant.environment_metrics.has_ee08_relative_humidity_01 = true;
+            measurement->variant.environment_metrics.ee08_temperature_01 = sensorreadings->m_temperature;
+            measurement->variant.environment_metrics.ee08_relative_humidity_01 = sensorreadings->m_humidity;
+        }
+    }
+    */
 
-    measurement->variant.environment_metrics.temperature = getTemp();
-    measurement->variant.environment_metrics.relative_humidity = getHumidity();
+    // check with new definition
+    measurement->variant.environment_metrics.has_ee08_temperature_01 = true;
+    measurement->variant.environment_metrics.has_ee08_relative_humidity_01 = true;
+
+    measurement->variant.environment_metrics.ee08_temperature_01 = getTemp();
+    measurement->variant.environment_metrics.ee08_relative_humidity_01 = getHumidity();
     
-    return measurement->variant.environment_metrics.temperature > -299 && 
-            measurement->variant.environment_metrics.relative_humidity > -1;
+    return measurement->variant.environment_metrics.ee08_temperature_01 > -299 && 
+            measurement->variant.environment_metrics.ee08_relative_humidity_01 > -1;
 }
 
 #endif
