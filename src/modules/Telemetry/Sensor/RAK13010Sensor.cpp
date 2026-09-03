@@ -74,7 +74,8 @@ bool RAK13010Sensor::QuerySensorType(char i)
     {
       LOG_DEBUG("<<<< %s", sdiMsgStr.c_str());
       String manufacturer = sdiMsgStr.substring(4,12);
-      if(manufacturer.compareTo("STEVENSW") == 0)
+      String manufacturerOld = sdiMsgStr.substring(3,11);
+      if(manufacturer.compareTo("STEVENSW") == 0 || manufacturerOld.compareTo("STEVENSW") == 0)
       {
         LOG_DEBUG("==== Type is Stevens Waters HydraProbe!");
         m_sensors[i] = new Stevens();
