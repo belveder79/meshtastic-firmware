@@ -666,8 +666,12 @@ bool EnvironmentTelemetryModule::sendTelemetry(NodeNum dest, bool phoneOnly)
         LOG_INFO("Send: soil_temperature=%f, soil_moisture=%u", m.variant.environment_metrics.soil_temperature,
                  m.variant.environment_metrics.soil_moisture);
 
+        // THOSE ONLY MAKE SENSE IF THEY ARE ACTUALLY CONNECTED/EXISTENT
         LOG_INFO("Send: swhp_soil_temperature_01=%f, swhp_soil_moisture_01=%f", m.variant.environment_metrics.swhp_soil_temperature_01,
                  m.variant.environment_metrics.swhp_soil_moisture_01);
+
+        LOG_INFO("Send: ee08_temperature_01=%f, ee08_relative_humidity_01=%f", m.variant.environment_metrics.ee08_temperature_01,
+                 m.variant.environment_metrics.ee08_relative_humidity_01);
 
         meshtastic_MeshPacket *p = allocDataProtobuf(m);
         p->to = dest;

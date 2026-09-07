@@ -51,6 +51,88 @@ st_E2_Return knl_E2bus_readByteFromSlave(unsigned char ControlByte)
     }
     return E2_Return;
 }
+
+st_E2_Return knl_E2bus_setInternalAddressPointer(uint8_t deviceAddress, unsigned char addressPtr)
+// read byte from slave with controlbyte
+{
+    unsigned char Checksum;
+    unsigned char counter = 0;
+    st_E2_Return E2_Return;
+    E2_Return.Status = 1;
+    while (E2_Return.Status && counter < RETRYS)
+    // RETRYS...Number of read attempts
+    {
+        knl_E2bus_start();                // send E2 start condition
+        unsigned char ControlByte = 0x50 | (deviceAddress << 1);
+        knl_E2bus_sendByte(ControlByte);  // send 0x50 for setting custom
+        if (knl_E2bus_check_ack() == ACK) // ACK received?
+        {
+            unsigned char AddressByte = addressPtr;
+            knl_E2bus_sendByte(AddressByte);
+            if (knl_E2bus_check_ack() == ACK)
+            {
+                unsigned char DataByte = addressPtr;
+                knl_E2bus_sendByte(DataByte);  
+                if (knl_E2bus_check_ack() == ACK)
+                {
+                    Checksum = (ControlByte + AddressByte + DataByte) % 0x100;
+                    knl_E2bus_sendByte(Checksum);  // checksum
+                    if (knl_E2bus_check_ack() == ACK)
+                    {
+                        E2_Return.Status = 0;
+                    }
+                }
+            }
+        }
+        knl_E2bus_stop(); // send E2 stop condition
+        //printf("Counter: %d\n",counter);
+        counter++;
+    }
+    return E2_Return;
+}
+
+st_E2_Return knl_E2bus_writeDataToAddressPointer(uint8_t deviceAddress, unsigned char addressPtr, unsigned char databyte)
+// read byte from slave with controlbyte
+{
+    unsigned char Checksum;
+    unsigned char counter = 0;
+    st_E2_Return E2_Return;
+    E2_Return.Status = 1;
+
+    LOG_WARN("********************* Writing data to sensor! I hope you know what you are doing! *****************");
+
+    while (E2_Return.Status && counter < RETRYS)
+    // RETRYS...Number of read attempts
+    {
+        knl_E2bus_start();                // send E2 start condition
+        unsigned char ControlByte = 0x10 | (deviceAddress << 1);
+        knl_E2bus_sendByte(ControlByte);  // send 0x50 for setting custom
+        if (knl_E2bus_check_ack() == ACK) // ACK received?
+        {
+            unsigned char AddressByte = addressPtr;
+            knl_E2bus_sendByte(AddressByte);  
+            if (knl_E2bus_check_ack() == ACK)
+            {
+                unsigned char DataByte = databyte;
+                knl_E2bus_sendByte(DataByte);  
+                if (knl_E2bus_check_ack() == ACK)
+                {
+                    Checksum = (ControlByte + AddressByte + DataByte) % 0x100;
+                    knl_E2bus_sendByte(Checksum);  // checksum
+                    if (knl_E2bus_check_ack() == ACK)
+                    {
+                        E2_Return.Status = 0;
+                    }
+                }
+            }
+        }
+        knl_E2bus_stop(); // send E2 stop condition
+        //printf("Counter: %d\n",counter);
+        counter++;
+    }
+    return E2_Return;
+}
+
 void knl_E2bus_start(void) // send start condition to E2-Interface
 {
     knl_E2bus_set_SDA();
@@ -274,17 +356,17 @@ void fl_init()
     knl_init();
 }
 
-float fl_E2bus_Read_Temp(void) // Read Measurement Value 2 (Temperature [°C])
+float fl_E2bus_Read_Temp(uint8_t deviceAddress) // Read Measurement Value 2 (Temperature [°C])
 {
     st_E2_Return E2_Return;
     float Temp;
     unsigned char Temp_LB, Temp_HB;
     Temp = -300;
-    E2_Return = knl_E2bus_readByteFromSlave(CB_MV2LO | (E2_DEVICE_ADR << 1));
+    E2_Return = knl_E2bus_readByteFromSlave(CB_MV2LO | (deviceAddress << 1));
     Temp_LB = E2_Return.DataByte;
     if (E2_Return.Status == 0)
     {
-        E2_Return = knl_E2bus_readByteFromSlave(CB_MV2HI | (E2_DEVICE_ADR << 1));
+        E2_Return = knl_E2bus_readByteFromSlave(CB_MV2HI | (deviceAddress << 1));
         Temp_HB = E2_Return.DataByte;
         if (E2_Return.Status == 0)
         {
@@ -294,18 +376,18 @@ float fl_E2bus_Read_Temp(void) // Read Measurement Value 2 (Temperature [°C])
     return Temp;
 }
 
-float fl_E2bus_Read_RH(void) // Read Measurement Value 1 (relative Humidity [%RH])
+float fl_E2bus_Read_RH(uint8_t deviceAddress) // Read Measurement Value 1 (relative Humidity [%RH])
 {
     st_E2_Return E2_Return;
     float RH;
     unsigned char RH_LB, RH_HB;
     RH = -1;
-    E2_Return = knl_E2bus_readByteFromSlave(CB_MV1LO | (E2_DEVICE_ADR << 1));
+    E2_Return = knl_E2bus_readByteFromSlave(CB_MV1LO | (deviceAddress << 1));
     RH_LB = E2_Return.DataByte;
     //printf("  %u\n",RH_LB);
     if (E2_Return.Status == 0)
     {
-        E2_Return = knl_E2bus_readByteFromSlave(CB_MV1HI | (E2_DEVICE_ADR << 1));
+        E2_Return = knl_E2bus_readByteFromSlave(CB_MV1HI | (deviceAddress << 1));
         RH_HB = E2_Return.DataByte;
         //printf("  %u\n",RH_HB);
         if (E2_Return.Status == 0)
@@ -322,17 +404,17 @@ float fl_E2bus_Read_RH(void) // Read Measurement Value 1 (relative Humidity [%RH
     return RH;
 }
 
-float fl_E2bus_Read_CO2_RAW(void) // Read Measurement Value 3 (CO2 RAW [ppm])
+float fl_E2bus_Read_CO2_RAW(uint8_t deviceAddress) // Read Measurement Value 3 (CO2 RAW [ppm])
 {
     st_E2_Return E2_Return;
     float CO2_RAW;
     unsigned char CO2_LB, CO2_HB;
     CO2_RAW = -1;
-    E2_Return = knl_E2bus_readByteFromSlave(CB_MV3LO | (E2_DEVICE_ADR << 1));
+    E2_Return = knl_E2bus_readByteFromSlave(CB_MV3LO | (deviceAddress << 1));
     CO2_LB = E2_Return.DataByte;
     if (E2_Return.Status == 0)
     {
-        E2_Return = knl_E2bus_readByteFromSlave(CB_MV3HI | (E2_DEVICE_ADR << 1));
+        E2_Return = knl_E2bus_readByteFromSlave(CB_MV3HI | (deviceAddress << 1));
         CO2_HB = E2_Return.DataByte;
         if (E2_Return.Status == 0)
         {
@@ -342,17 +424,17 @@ float fl_E2bus_Read_CO2_RAW(void) // Read Measurement Value 3 (CO2 RAW [ppm])
     return CO2_RAW;
 }
 
-float fl_E2bus_Read_CO2_MEAN(void) // Read Measurement Value 4 (CO2 MEAN [ppm])
+float fl_E2bus_Read_CO2_MEAN(uint8_t deviceAddress) // Read Measurement Value 4 (CO2 MEAN [ppm])
 {
     st_E2_Return E2_Return;
     float CO2_MEAN;
     unsigned char CO2_LB, CO2_HB;
     CO2_MEAN = -1;
-    E2_Return = knl_E2bus_readByteFromSlave(CB_MV4LO | (E2_DEVICE_ADR << 1));
+    E2_Return = knl_E2bus_readByteFromSlave(CB_MV4LO | (deviceAddress << 1));
     CO2_LB = E2_Return.DataByte;
     if (E2_Return.Status == 0)
     {
-        E2_Return = knl_E2bus_readByteFromSlave(CB_MV4HI | (E2_DEVICE_ADR << 1));
+        E2_Return = knl_E2bus_readByteFromSlave(CB_MV4HI | (deviceAddress << 1));
         CO2_HB = E2_Return.DataByte;
         if (E2_Return.Status == 0)
         {
@@ -362,10 +444,10 @@ float fl_E2bus_Read_CO2_MEAN(void) // Read Measurement Value 4 (CO2 MEAN [ppm])
     return CO2_MEAN;
 }
 
-unsigned char fl_E2bus_Read_Status(void) // read Statusbyte from E2-Interface
+unsigned char fl_E2bus_Read_Status(uint8_t deviceAddress) // read Statusbyte from E2-Interface
 {
     st_E2_Return E2_Return;
-    E2_Return = knl_E2bus_readByteFromSlave(CB_STATUS | (E2_DEVICE_ADR << 1));
+    E2_Return = knl_E2bus_readByteFromSlave(CB_STATUS | (deviceAddress << 1));
     if (E2_Return.Status == 1)
     {
         E2_Return.DataByte = 0xFF;
@@ -373,17 +455,17 @@ unsigned char fl_E2bus_Read_Status(void) // read Statusbyte from E2-Interface
     return E2_Return.DataByte;
 }
 
-unsigned int fl_E2bus_Read_SensorType(void) // read Sensortype from E2-Interface
+unsigned int fl_E2bus_Read_SensorType(uint8_t deviceAddress) // read Sensortype from E2-Interface
 {
     st_E2_Return E2_Return;
     unsigned int Type;
     unsigned char Type_LB, Type_HB;
     Type = 0xFFFF;
-    E2_Return = knl_E2bus_readByteFromSlave(CB_TYPELO | (E2_DEVICE_ADR << 1));
+    E2_Return = knl_E2bus_readByteFromSlave(CB_TYPELO | (deviceAddress << 1));
     Type_LB = E2_Return.DataByte;
     if (E2_Return.Status == 0)
     {
-        E2_Return = knl_E2bus_readByteFromSlave(CB_TYPEHI | (E2_DEVICE_ADR << 1));
+        E2_Return = knl_E2bus_readByteFromSlave(CB_TYPEHI | (deviceAddress << 1));
         Type_HB = E2_Return.DataByte;
         if (E2_Return.Status == 0)
         {
@@ -393,10 +475,32 @@ unsigned int fl_E2bus_Read_SensorType(void) // read Sensortype from E2-Interface
     return Type;
 }
 
-unsigned char fl_E2bus_Read_FirmwareVersion(void) // read Sensor Subtype from E2-Interface
+unsigned char fl_E2bus_Read_CustomAddress(uint8_t deviceAddress, unsigned char addressPtr, bool setPtrBeforeRead)
+{
+    st_E2_Return E2_Return; 
+    // if we do not set it, we assume we do autoincrement in multiple readings
+    if(setPtrBeforeRead)
+        E2_Return = knl_E2bus_setInternalAddressPointer(deviceAddress, addressPtr);
+    else
+        E2_Return.Status = 0;
+
+    if (E2_Return.Status == 0) // went ok!
+    {
+        E2_Return = knl_E2bus_readByteFromSlave(0x51 | (deviceAddress << 1));
+        if (E2_Return.Status == 1)
+        {
+            E2_Return.DataByte = 0xFF;
+        }
+        return E2_Return.DataByte;
+    }
+    E2_Return.DataByte = 0xFF;
+    return E2_Return.DataByte;
+}
+
+unsigned char fl_E2bus_Write_CustomAddress(uint8_t deviceAddress, unsigned char addressPtr, unsigned char dataByte)
 {
     st_E2_Return E2_Return;
-    E2_Return = knl_E2bus_readByteFromSlave(0x51 | (E2_DEVICE_ADR << 1));
+    E2_Return = knl_E2bus_writeDataToAddressPointer(deviceAddress, addressPtr, dataByte);
     if (E2_Return.Status == 1)
     {
         E2_Return.DataByte = 0xFF;
@@ -404,10 +508,11 @@ unsigned char fl_E2bus_Read_FirmwareVersion(void) // read Sensor Subtype from E2
     return E2_Return.DataByte;
 }
 
-unsigned char fl_E2bus_Read_FirmwareSubVersion(void) // read Sensor Subtype from E2-Interface
+
+unsigned char fl_E2bus_Read_SensorSubType(uint8_t deviceAddress) // read Sensor Subtype from E2-Interface
 {
     st_E2_Return E2_Return;
-    E2_Return = knl_E2bus_readByteFromSlave(0x51 | (E2_DEVICE_ADR << 1));
+    E2_Return = knl_E2bus_readByteFromSlave(CB_TYPESUB | (deviceAddress << 1));
     if (E2_Return.Status == 1)
     {
         E2_Return.DataByte = 0xFF;
@@ -415,22 +520,11 @@ unsigned char fl_E2bus_Read_FirmwareSubVersion(void) // read Sensor Subtype from
     return E2_Return.DataByte;
 }
 
-unsigned char fl_E2bus_Read_SensorSubType(void) // read Sensor Subtype from E2-Interface
-{
-    st_E2_Return E2_Return;
-    E2_Return = knl_E2bus_readByteFromSlave(CB_TYPESUB | (E2_DEVICE_ADR << 1));
-    if (E2_Return.Status == 1)
-    {
-        E2_Return.DataByte = 0xFF;
-    }
-    return E2_Return.DataByte;
-}
-
-unsigned char fl_E2bus_Read_AvailablePhysicalMeasurements(void)
+unsigned char fl_E2bus_Read_AvailablePhysicalMeasurements(uint8_t deviceAddress)
 // read available physical Measurements from E2-Interface
 {
     st_E2_Return E2_Return;
-    E2_Return = knl_E2bus_readByteFromSlave(CB_AVPHMES | (E2_DEVICE_ADR << 1));
+    E2_Return = knl_E2bus_readByteFromSlave(CB_AVPHMES | (deviceAddress << 1));
     if (E2_Return.Status == 1)
     {
         E2_Return.DataByte = 0xFF;
@@ -444,99 +538,152 @@ bool EE08Sensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
 {
     LOG_DEBUG("===================== Init sensor: %s", sensorName);
 
-    fl_init();
+    fl_init(); 
 
-    unsigned int SensorType = fl_E2bus_Read_SensorType(); // read Sensortype from E2-Interface
-    LOG_DEBUG("===================== Sensortype: %u",SensorType);
+    uint8_t deviceAddress = 0;
+    for(; deviceAddress < 8; deviceAddress++)
+    {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        unsigned int SensorType = fl_E2bus_Read_SensorType(deviceAddress); // read Sensortype from E2-Interface
 
-    // read Sensor Subtype from E2-Interface
-    unsigned char SensorSubType = fl_E2bus_Read_SensorSubType();
-    LOG_DEBUG("===================== SensorSubtype: %u",SensorSubType);
-    
-    unsigned char AvPhMes = fl_E2bus_Read_AvailablePhysicalMeasurements();
-    // read available physical Measurements from
-    LOG_DEBUG("===================== Available: %d",AvPhMes);
+        // seems that we found one
+        if(SensorType < 65535)
+        {
+            String type;
+            type += char(64 + ((SensorType >> 12) & 0x0F));
+            type += char(64 + ((SensorType >> 8) & 0x0F));
+            type += char(48 + ((SensorType >> 4) & 0x0F));
+            type += char(48 + (SensorType & 0x0F));
+            LOG_DEBUG("===================== Sensortype %s found on address %u... ",type.c_str(), deviceAddress);
 
-    unsigned char Status = fl_E2bus_Read_Status();
-    LOG_DEBUG("===================== Status: %d\n",Status);
+            // read Sensor Subtype from E2-Interface
+            unsigned char SensorSubType = fl_E2bus_Read_SensorSubType(deviceAddress);
+            LOG_DEBUG("===================== SensorSubtype: %u",SensorSubType);
 
-    return SensorType == 21768;
+                        // needs setting internal address pointer
+            unsigned char FirmwareVersion = fl_E2bus_Read_CustomAddress(deviceAddress, 0x00);
+            LOG_DEBUG("===================== FirmwareVersion: %u",FirmwareVersion);
+
+            unsigned char FirmwareSubVersion = fl_E2bus_Read_CustomAddress(deviceAddress, 0x01, false); // don't need to set counter due to auto-increment
+            LOG_DEBUG("===================== FirmwareSubVersion: %u",FirmwareSubVersion);
+
+            unsigned char E2Spec = fl_E2bus_Read_CustomAddress(deviceAddress, 0x02, false); // don't need to set counter due to auto-increment
+            LOG_DEBUG("===================== E2Spec: %u",E2Spec);
+
+            // read available physical Measurements from
+            unsigned char AvPhMes = fl_E2bus_Read_AvailablePhysicalMeasurements(deviceAddress);
+            LOG_DEBUG("===================== Available: %d",AvPhMes);
+
+            unsigned char addr = fl_E2bus_Read_CustomAddress(deviceAddress, 0xC0);
+            LOG_DEBUG("===================== Bus Address: %u",addr);
+
+            unsigned char SupportedFunctions = fl_E2bus_Read_CustomAddress(deviceAddress, 0x07);
+            LOG_DEBUG("===================== SupportedFunctions: %u",SupportedFunctions);
+            if (SupportedFunctions < 255)
+            {
+                
+                vTaskDelay(pdMS_TO_TICKS(50));
+
+                // querying serial is supported...
+                if (SupportedFunctions & 0x01) {
+                    int j = 0;
+                    String serial;
+                    for (unsigned char i = 0xA0; i < 0xAF; i++) {
+                        unsigned char dec = fl_E2bus_Read_CustomAddress(deviceAddress, i, j==0);
+                        serial += char(dec); j++; 
+                        vTaskDelay(pdMS_TO_TICKS(50));  
+                    }
+                    LOG_DEBUG("===================== Serial: %s",serial.c_str());
+                }
+
+                if(SupportedFunctions & 0x02) {
+                    LOG_DEBUG("===================== Address Change should be actually supported - change to 0x02");
+                    unsigned char AddressChanged = fl_E2bus_Write_CustomAddress(deviceAddress, 0xC0, 0x02); // change address to 2
+                    LOG_DEBUG("===================== Address Change: %d", AddressChanged);
+                }
+            }
+
+            unsigned char Status = fl_E2bus_Read_Status(deviceAddress);
+            LOG_DEBUG("===================== Status: %d",Status);
+
+            m_sensors[deviceAddress] = new EE08();        
+        }
+    }
+    return m_sensors.size() > 0;
 }
 
-float EE08Sensor::getHumidity()
+float EE08Sensor::getHumidity(uint8_t deviceAddress)
 {
-    float humidity = fl_E2bus_Read_RH(); // Read Measurement Value 1 (rel.v Humidity [%RH])
+    float humidity = fl_E2bus_Read_RH(deviceAddress); // Read Measurement Value 1 (rel.v Humidity [%RH])
     LOG_DEBUG("===================== Humidity: %.3f",humidity);
     return humidity;
 }
 
-float EE08Sensor::getTemp()
+float EE08Sensor::getTemp(uint8_t deviceAddress)
 {
-    float temperature = fl_E2bus_Read_Temp(); // Read Measurement Value 2 (Temperature [°C])
+    float temperature = fl_E2bus_Read_Temp(deviceAddress); // Read Measurement Value 2 (Temperature [°C])
     LOG_DEBUG("===================== Temperature: %.3f",temperature);
     return temperature;
 }
 
 bool EE08Sensor::getMetrics(meshtastic_Telemetry *measurement)
-{
-    fl_E2bus_Read_Status();
-    
-    vTaskDelay(pdMS_TO_TICKS(4000));
+{   
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
-    /*
-    // TODO: ASSUME HERE THAT WE HAVE A LIST OF SENSORS (NOT JUST ONE, SO WE RUN THROUGH ALL THE EE08 SENSORS IN ORDER)
-    // SEE IMPLEMENATION IN RAK13010Sensors.h/cpp
-    if(sensorreadings->m_readOK)
+    // read all sensors
+    for(auto it : m_sensors)
+    {
+        LOG_DEBUG("===================== Reading sensor: %u",it.first);
+        LOG_DEBUG("===================== Status: %u", fl_E2bus_Read_Status(it.first));
+
+        vTaskDelay(pdMS_TO_TICKS(200));
+
+        it.second->m_temperature = getTemp(it.first);
+        it.second->m_humidity = getHumidity(it.first);
+        it.second->m_readOK = it.second->m_temperature > -299 && it.second->m_humidity > -1;
+
+        if(it.second->m_readOK)
         {
-        // 01 is already occupied, so use another definition
-        if(measurement->variant.environment_metrics.has_ee08_temperature_01)
-        {
-            // 02 is already occupied, so use another definition
-            if(measurement->variant.environment_metrics.has_ee08_temperature_02)
+            // 01 is already occupied, so use another definition
+            if(measurement->variant.environment_metrics.has_ee08_temperature_01)
             {
-                // 03 is already occupied, so use another definition
-                if(measurement->variant.environment_metrics.has_ee08_temperature_03)
+                // 02 is already occupied, so use another definition
+                if(measurement->variant.environment_metrics.has_ee08_temperature_02)
                 {
-                    measurement->variant.environment_metrics.has_ee08_temperature_04 = true;
-                    measurement->variant.environment_metrics.has_ee08_relative_humidity_04 = true;
-                    measurement->variant.environment_metrics.ee08_temperature_04 = sensorreadings->m_temperature;
-                    measurement->variant.environment_metrics.ee08_relative_humidity_04 = sensorreadings->m_humidity;  
+                    // 03 is already occupied, so use another definition
+                    if(measurement->variant.environment_metrics.has_ee08_temperature_03)
+                    {
+                        measurement->variant.environment_metrics.has_ee08_temperature_04 = true;
+                        measurement->variant.environment_metrics.has_ee08_relative_humidity_04 = true;
+                        measurement->variant.environment_metrics.ee08_temperature_04 = it.second->m_temperature;
+                        measurement->variant.environment_metrics.ee08_relative_humidity_04 = it.second->m_humidity;  
+                    }
+                    else
+                    {
+                        measurement->variant.environment_metrics.has_ee08_temperature_03 = true;
+                        measurement->variant.environment_metrics.has_ee08_relative_humidity_03 = true;
+                        measurement->variant.environment_metrics.ee08_temperature_03 = it.second->m_temperature;
+                        measurement->variant.environment_metrics.ee08_relative_humidity_03 = it.second->m_humidity;                
+                    }
                 }
                 else
                 {
-                    measurement->variant.environment_metrics.has_ee08_temperature_03 = true;
-                    measurement->variant.environment_metrics.has_ee08_relative_humidity_03 = true;
-                    measurement->variant.environment_metrics.ee08_temperature_03 = sensorreadings->m_temperature;
-                    measurement->variant.environment_metrics.ee08_relative_humidity_03 = sensorreadings->m_humidity;                
+                measurement->variant.environment_metrics.has_ee08_temperature_02 = true;
+                measurement->variant.environment_metrics.has_ee08_relative_humidity_02 = true;
+                measurement->variant.environment_metrics.ee08_temperature_02 = it.second->m_temperature;
+                measurement->variant.environment_metrics.ee08_relative_humidity_02 = it.second->m_humidity;                
                 }
             }
             else
             {
-            measurement->variant.environment_metrics.has_ee08_temperature_02 = true;
-            measurement->variant.environment_metrics.has_ee08_relative_humidity_02 = true;
-            measurement->variant.environment_metrics.ee08_temperature_02 = sensorreadings->m_temperature;
-            measurement->variant.environment_metrics.ee08_relative_humidity_02 = sensorreadings->m_humidity;                
+                measurement->variant.environment_metrics.has_ee08_temperature_01 = true;
+                measurement->variant.environment_metrics.has_ee08_relative_humidity_01 = true;
+                measurement->variant.environment_metrics.ee08_temperature_01 = it.second->m_temperature;
+                measurement->variant.environment_metrics.ee08_relative_humidity_01 = it.second->m_humidity;
             }
         }
-        else
-        {
-            measurement->variant.environment_metrics.has_ee08_temperature_01 = true;
-            measurement->variant.environment_metrics.has_ee08_relative_humidity_01 = true;
-            measurement->variant.environment_metrics.ee08_temperature_01 = sensorreadings->m_temperature;
-            measurement->variant.environment_metrics.ee08_relative_humidity_01 = sensorreadings->m_humidity;
-        }
     }
-    */
-
-    // check with new definition
-    measurement->variant.environment_metrics.has_ee08_temperature_01 = true;
-    measurement->variant.environment_metrics.has_ee08_relative_humidity_01 = true;
-
-    measurement->variant.environment_metrics.ee08_temperature_01 = getTemp();
-    measurement->variant.environment_metrics.ee08_relative_humidity_01 = getHumidity();
-    
-    return measurement->variant.environment_metrics.ee08_temperature_01 > -299 && 
-            measurement->variant.environment_metrics.ee08_relative_humidity_01 > -1;
+    return m_sensors.size() > 0;
 }
 
 #endif
