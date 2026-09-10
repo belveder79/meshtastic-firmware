@@ -300,7 +300,7 @@ bool RAK13010Sensor::ReadData()
               sensorreadings->m_direction = atoi(sdiMsgStr.substring(idx0+1,idx1).c_str()); // cast to uint16
               sensorreadings->m_magnitude = atof(sdiMsgStr.substring(idx1+1,idx2).c_str());
               sensorreadings->m_status = atof(sdiMsgStr.substring(idx2+1,idx3).c_str());
-              LOG_DEBUG("dir: %f - mag: %f - status: %f", sensorreadings->m_direction, sensorreadings->m_magnitude, sensorreadings->m_status);
+              LOG_DEBUG("dir: %u - mag: %f - status: %f", sensorreadings->m_direction, sensorreadings->m_magnitude, sensorreadings->m_status);
               
               serialMsgRflag = 0; // exit flag
               break;
