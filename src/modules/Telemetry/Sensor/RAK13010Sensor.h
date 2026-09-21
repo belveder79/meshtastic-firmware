@@ -39,7 +39,11 @@ class RAK13010Sensor : public TelemetrySensor
         virtual ~WindSonic() {};
         uint16_t m_direction;
         float m_magnitude;
-        float m_status;
+#if GILL_CONTINUOUS_AVG_POLAR
+        uint16_t m_dirmax;
+        float m_magmax;
+#endif
+        uint8_t m_status;
     };
     class Stevens : public SDISensor {
       public:
@@ -62,6 +66,9 @@ class RAK13010Sensor : public TelemetrySensor
     RAK_SDI12* m_SDI12;
     bool ReadData();
 
+#if GILL_CONTINUOUS_AVG_POLAR
+    bool ConfigGillXHPM(char i);
+#endif
     bool CheckActive(char i);
     bool QuerySensorType(char i);
     void ScanAddressSpace();

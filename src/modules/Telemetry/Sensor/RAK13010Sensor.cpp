@@ -38,6 +38,65 @@ bool RAK13010Sensor::CheckActive(char i)
   return false;
 }
 
+#if GILL_CONTINUOUS_AVG_POLAR
+bool RAK13010Sensor::ConfigGillXHPM(char i)
+{
+  uint8_t serialMsgRflag = 1;
+  boolean sdiMsgReady = false;
+  String sdiMsgStr = "";
+  
+  int timeoutCnt = 5000;
+  // loop emulation
+  while(serialMsgRflag && timeoutCnt-- > 0)
+  {
+    int avail = m_SDI12->available();
+    if (avail < 0) 
+    {
+      m_SDI12->clearBuffer();  // Buffer is full,clear.
+    }  
+    else if (avail > 0)  
+    {
+      for (int a = 0; a < avail; a++) 
+      {
+        char inByte2 = m_SDI12->read();
+        if (inByte2 == '\n') 
+        {
+          sdiMsgReady = true;
+        } 
+        else 
+        {
+          sdiMsgStr += String(inByte2);
+          LOG_DEBUG("recv: %s", sdiMsgStr.c_str());
+        }
+      }
+    }
+
+    if (sdiMsgReady)
+    {
+      LOG_DEBUG("<<<< %s", sdiMsgStr.c_str());
+      // TODO: check retval of XHPM command
+
+      sdiMsgReady = false;  // Reset String for next SDI-12 message.
+      sdiMsgStr   = "";
+      serialMsgRflag = 0; 
+    }
+
+    if (serialMsgRflag)
+    {
+      if(serialMsgRflag == 1)
+      {
+        serialMsgRflag = 2;
+        String cmd(String(i) + "XHPM!");
+        m_SDI12->sendCommand(cmd);
+        LOG_DEBUG((String(">>>> ") + cmd).c_str());
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return (timeoutCnt > 0);
+}
+#endif
+
 bool RAK13010Sensor::QuerySensorType(char i)
 {
   uint8_t serialMsgRflag = 1;
@@ -86,6 +145,12 @@ bool RAK13010Sensor::QuerySensorType(char i)
         LOG_DEBUG("==== Type is Gill Windsonic!");
         m_sensors[i] = new WindSonic();
         knownSensor = true;
+#if GILL_CONTINUOUS_AVG_POLAR
+        if(!ConfigGillXHPM(i))
+        {
+          LOG_WARN("==== Setting XHPM mode failed!");
+        }
+#endif
       }
       else
       {
@@ -174,7 +239,7 @@ bool RAK13010Sensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
   return m_sensors.size() > 0;
 }
 
-int getIndices(const String sdiMsgStr, const int expected, int &idx0, int &idx1, int &idx2, int &idx3)
+int getIndices(const String sdiMsgStr, const int expected, int &idx0, int &idx1, int &idx2, int &idx3, int &idx4, int& idx5)
 {
         int idx0p = sdiMsgStr.indexOf("+",0); idx0p = idx0p < 0 ? sdiMsgStr.length() : idx0p;     
         int idx0m = sdiMsgStr.indexOf("-",0); idx0m = idx0m < 0 ? sdiMsgStr.length() : idx0m;
@@ -184,15 +249,40 @@ int getIndices(const String sdiMsgStr, const int expected, int &idx0, int &idx1,
         idx1 = idx1m < idx1p ? idx1m : idx1p;
         if(expected > 2)
         {
+          // strikes for 3 or more
           int idx2p = sdiMsgStr.indexOf("+",idx1+1); idx2p = idx2p < 0 ? sdiMsgStr.length() : idx2p;   
           int idx2m = sdiMsgStr.indexOf("-",idx1+1); idx2m = idx2m < 0 ? sdiMsgStr.length() : idx2m;
           idx2 = idx2m < idx2p ? idx2m : idx2p;
-          idx3 = sdiMsgStr.indexOf("#",idx2+1);
+          if(expected > 3) 
+          {
+            // strikes for 4 or more
+            int idx3p = sdiMsgStr.indexOf("+",idx2+1); idx3p = idx3p < 0 ? sdiMsgStr.length() : idx3p;   
+            int idx3m = sdiMsgStr.indexOf("-",idx2+1); idx3m = idx3m < 0 ? sdiMsgStr.length() : idx3m;
+            idx3 = idx3m < idx3p ? idx3m : idx3p;
+            if(expected > 4)
+            { 
+              // strikes for 5
+              int idx4p = sdiMsgStr.indexOf("+",idx3+1); idx4p = idx4p < 0 ? sdiMsgStr.length() : idx4p;   
+              int idx4m = sdiMsgStr.indexOf("-",idx3+1); idx4m = idx4m < 0 ? sdiMsgStr.length() : idx4m;
+              idx4 = idx4m < idx4p ? idx4m : idx4p;
+              idx5 = sdiMsgStr.indexOf("#",idx4+1);
+            }
+            else
+            { // strikes for 4 
+              idx4 = sdiMsgStr.indexOf("#",idx3+1);
+              idx5 = sdiMsgStr.length();
+            }
+          }
+          else
+          { // strikes for 3
+            idx3 = sdiMsgStr.indexOf("#",idx2+1);
+            idx4 = idx5 = sdiMsgStr.length();
+          }
         }
         else
-        {
+        { // strikes for 2
           idx2 = sdiMsgStr.indexOf("#",idx1+1);
-          idx3 = sdiMsgStr.length();
+          idx3 = idx4 = idx5 = sdiMsgStr.length();
         }
         return expected;
 }
@@ -269,12 +359,12 @@ bool RAK13010Sensor::ReadData()
         }
         if(serialMsgRflag == 6)
         {
-          int idx0, idx1, idx2, idx3;
-          int fields = getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3);
+          int idx0, idx1, idx2, idx3, idx4, idx5;
           switch(sdiSensorType)
           {
             case SDISensorType::STEVENS:
             {
+              int fields = getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3, idx4, idx5);
               // result of D0! should give something like 
               // 9+0.000+0.001+25.0#
               // F – Soil Moisture
@@ -291,6 +381,24 @@ bool RAK13010Sensor::ReadData()
             }
             case SDISensorType::WINDSONIC:
             {
+#if GILL_CONTINUOUS_AVG_POLAR
+              int fields = getIndices(sdiMsgStr, 5, idx0, idx1, idx2, idx3, idx4, idx5);
+              // result of R2! should give something like
+              // <dir_from_vectorav><mag_from_vectorav><dir_at_mag_scalarmax><mag_scalarmax><status>
+              // a+090+000.02+123+000.12+00#
+              // direction
+              // magnitude
+              // status
+              WindSonic* sensorreadings = reinterpret_cast<WindSonic*>(sdiSensor);
+              sensorreadings->m_direction = atoi(sdiMsgStr.substring(idx0+1,idx1).c_str()); // cast to uint16
+              sensorreadings->m_magnitude = atof(sdiMsgStr.substring(idx1+1,idx2).c_str());
+              sensorreadings->m_dirmax = atoi(sdiMsgStr.substring(idx2+1,idx3).c_str());
+              sensorreadings->m_magmax = atof(sdiMsgStr.substring(idx3+1,idx4).c_str());
+              sensorreadings->m_status = atoi(sdiMsgStr.substring(idx4+1,idx5).c_str());
+              LOG_DEBUG("dir: %u - mag: %f - maxdir: %u - maxmag: %f - status: %u", sensorreadings->m_direction, 
+                sensorreadings->m_magnitude, sensorreadings->m_dirmax, sensorreadings->m_magmax, sensorreadings->m_status);
+#else
+              int fields = getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3, idx4, idx5);
               // result of D0! should give something like 
               // a+083+000.02+00#
               // direction
@@ -299,9 +407,9 @@ bool RAK13010Sensor::ReadData()
               WindSonic* sensorreadings = reinterpret_cast<WindSonic*>(sdiSensor);
               sensorreadings->m_direction = atoi(sdiMsgStr.substring(idx0+1,idx1).c_str()); // cast to uint16
               sensorreadings->m_magnitude = atof(sdiMsgStr.substring(idx1+1,idx2).c_str());
-              sensorreadings->m_status = atof(sdiMsgStr.substring(idx2+1,idx3).c_str());
-              LOG_DEBUG("dir: %u - mag: %f - status: %f", sensorreadings->m_direction, sensorreadings->m_magnitude, sensorreadings->m_status);
-              
+              sensorreadings->m_status = atoi(sdiMsgStr.substring(idx2+1,idx3).c_str());
+              LOG_DEBUG("dir: %u - mag: %f - status: %u", sensorreadings->m_direction, sensorreadings->m_magnitude, sensorreadings->m_status);
+#endif
               serialMsgRflag = 0; // exit flag
               break;
             }
@@ -311,8 +419,8 @@ bool RAK13010Sensor::ReadData()
         }
         if(serialMsgRflag == 8)
         {
-          int idx0, idx1, idx2, idx3;
-          int fields = getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3);          
+          int idx0, idx1, idx2, idx3, idx4, idx5;
+          int fields = getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3, idx4, idx5);          
           switch(sdiSensorType)
           {
             case SDISensorType::STEVENS:
@@ -335,8 +443,8 @@ bool RAK13010Sensor::ReadData()
           serialMsgRflag = 9;
         }    
         if(serialMsgRflag == 10) {
-          int idx0, idx1, idx2, idx3;
-          int fields = getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3);
+          int idx0, idx1, idx2, idx3, idx4, idx5;
+          int fields = getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3, idx4, idx5);
           switch(sdiSensorType)
           {
             case SDISensorType::STEVENS:
@@ -371,8 +479,8 @@ bool RAK13010Sensor::ReadData()
         }
         if(serialMsgRflag == 14)
         {
-          int idx0, idx1, idx2, idx3;
-          int fields = getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3); 
+          int idx0, idx1, idx2, idx3, idx4, idx5;
+          int fields = getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3, idx4, idx5); 
           switch(sdiSensorType)
           {
             case SDISensorType::STEVENS:
@@ -393,8 +501,8 @@ bool RAK13010Sensor::ReadData()
           serialMsgRflag = 15;
         }    
         if(serialMsgRflag == 16) {
-          int idx0, idx1, idx2, idx3;
-          int fields = getIndices(sdiMsgStr, 2, idx0, idx1, idx2, idx3);   
+          int idx0, idx1, idx2, idx3, idx4, idx5;
+          int fields = getIndices(sdiMsgStr, 2, idx0, idx1, idx2, idx3, idx4, idx5);   
           switch(sdiSensorType)
           {
             case SDISensorType::STEVENS:
@@ -422,10 +530,32 @@ bool RAK13010Sensor::ReadData()
       {
         if(serialMsgRflag == 3)
         {
-          serialMsgRflag = 4;
-          String cmd(String(sdiSensorAddress) + "M!");
-          m_SDI12->sendCommand(cmd);
-          LOG_DEBUG(">>>> %s",cmd.c_str());
+#if GILL_CONTINUOUS_AVG_POLAR          
+          // switch types
+          switch(sdiSensorType)
+          {
+            case SDISensorType::STEVENS:
+            {
+#endif
+              String cmd(String(sdiSensorAddress) + "M!");
+              m_SDI12->sendCommand(cmd);
+              LOG_DEBUG(">>>> %s",cmd.c_str());
+              serialMsgRflag = 4;
+              break;
+#if GILL_CONTINUOUS_AVG_POLAR
+            }
+            case SDISensorType::WINDSONIC:
+            {
+              String cmd(String(sdiSensorAddress) + "R2!");
+              m_SDI12->sendCommand(cmd);
+              LOG_DEBUG(">>>> %s",cmd.c_str());
+              serialMsgRflag = 6;
+              break;
+            }
+            default:
+              ;;
+          }
+#endif
         }
         if(serialMsgRflag == 5)
         {
@@ -582,6 +712,13 @@ bool RAK13010Sensor::getMetrics(meshtastic_Telemetry *measurement)
 
             measurement->variant.environment_metrics.wind_direction = sensorreadings->m_direction;
             measurement->variant.environment_metrics.wind_speed = sensorreadings->m_magnitude;
+#if GILL_CONTINUOUS_AVG_POLAR
+            measurement->variant.environment_metrics.has_wind_gust = true;
+            measurement->variant.environment_metrics.has_wind_lull = true;
+
+            measurement->variant.environment_metrics.wind_gust= sensorreadings->m_magmax;
+            measurement->variant.environment_metrics.wind_lull = (float) sensorreadings->m_dirmax; // reuse lull for direction
+#endif
           }
           break;
         }
