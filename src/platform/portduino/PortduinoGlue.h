@@ -16,6 +16,7 @@ extern struct portduino_status_struct {
 } portduino_status;
 
 #include "platform/portduino/USBHal.h"
+#include "platform/portduino/WaveshareUsbHal.h"
 
 // Product strings for auto-configuration
 // {"PRODUCT_STRING", "CONFIG.YAML"}
@@ -59,6 +60,7 @@ extern std::ofstream traceFile;
 extern std::ofstream JSONFile;
 
 extern Ch341Hal *ch341Hal;
+extern WaveshareUsbHal *waveshareUsbHal;
 int initGPIOPin(int pinNum, const std::string &gpioChipname, int line);
 bool loadConfig(const char *configPath);
 static bool ends_with(std::string_view str, std::string_view suffix);
@@ -86,6 +88,7 @@ extern struct portduino_config_struct {
     bool has_device_id = false;
     uint8_t device_id[16] = {0};
     std::string lora_spi_dev = "";
+    std::string lora_serial_port = "";
     std::string lora_usb_serial_num = "";
     int lora_spi_dev_int = 0;
     int lora_default_gpiochip = 0;

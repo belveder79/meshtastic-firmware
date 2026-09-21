@@ -1,0 +1,49 @@
+# Waveshare USB-to-LoRa module running the custom "dumb bridge" firmware
+# from https://github.com/belveder79/waveshare_usb_lora_bridge (a GD32F103C8T6
+# relaying SPI/GPIO commands to an on-board SX126x over a CH343 virtual COM
+# port at 921600 baud, framed as documented in that repo's README.md).
+#
+# Unlike CH341-based USB LoRa sticks (spidev: ch341), this device has no
+# USB VID/PID-based auto-discovery and no reliable per-unit serial number,
+# so SerialPort must be set explicitly, and you'll likely need to also set
+# MACAddress: under this file's General: section (or in the main
+# config.yaml) since one can't be derived automatically here.
+#
+# Two things confirmed against real hardware, both likely to vary by unit
+# (the bridge project's README notes Waveshare ships multiple PCB revisions
+# -- 433/868 MHz, XTAL/TCXO):
+#
+#   1. RadioLib's own chip-version-string readback identified the actual
+#      silicon on the tested unit as an SX1261, not an SX1262. Meshtastic
+#      has no separate "sx1261" Lora module type, so `Module: sx1262` is
+#      used regardless -- RadioLib's SX1262 driver class works against real
+#      SX1261 silicon for our purposes (it only special-cases SX1261 in
+#      output-power clamping, applied later than anything below). But
+#      SX126X_MAX_POWER must be capped at SX1261's real +15dBm max, not
+#      SX1262's +22dBm -- Meshtastic won't clamp this for you since it
+#      thinks it's talking to an SX1262. If your unit's version string
+#      reads back "SX1262", raise this back to 22.
+#
+#   2. Radio init consistently failed (RadioLib error -707, a failed
+#      CALIBRATE command) until DIO3_TCXO_VOLTAGE was set -- this unit
+#      needs its oscillator driven as a TCXO via DIO3, not as a bare
+#      crystal. If your unit uses the XTAL PCB revision instead, you may
+#      need to remove this line.
+
+Meta:
+  name: Waveshare USB-LoRa bridge
+  support: community
+  compatible:
+    - usb
+
+Lora:
+  Module: sx1262
+  spidev: waveshare-usb
+  SerialPort: /dev/ttyACM0 # EDIT ME: e.g. /dev/cu.usbmodemXXXX on macOS, /dev/ttyACM0 on Linux
+  CS: 255 # sentinel: CS is handled automatically by the device firmware, not a real GPIO
+  IRQ: 5 # DIO1
+  Reset: 0 # NRESET
+  Busy: 4 # BUSY
+  RXen: 1 # RFSWITCH (single external RF-switch enable line; no separate TXen)
+  SX126X_MAX_POWER: 15 # this unit is actually SX1261 silicon; see note above
+  DIO3_TCXO_VOLTAGE: true # 1.8V default; this unit needs its oscillator driven as a TCXO

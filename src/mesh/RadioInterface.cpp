@@ -274,6 +274,8 @@ std::unique_ptr<RadioInterface> initLoRa()
               portduino_config.lora_spi_dev.c_str());
     if (portduino_config.lora_spi_dev == "ch341") {
         RadioLibHAL = ch341Hal;
+    } else if (portduino_config.lora_spi_dev == "waveshare-usb") {
+        RadioLibHAL = waveshareUsbHal;
     } else {
         if (RadioLibHAL != nullptr) {
             delete RadioLibHAL;

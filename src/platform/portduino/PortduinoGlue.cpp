@@ -51,6 +51,7 @@ portduino_status_struct portduino_status;
 std::ofstream traceFile;
 std::ofstream JSONFile;
 Ch341Hal *ch341Hal = nullptr;
+WaveshareUsbHal *waveshareUsbHal = nullptr;
 char *configPath = nullptr;
 char *optionMac = nullptr;
 bool verboseEnabled = false;
@@ -555,6 +556,19 @@ void portduinoSetup()
             sprintf(macBuf, "%02X%02X%02X%02X%02X%02X", dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5]);
             portduino_config.mac_address = macBuf;
         }
+    } else if (portduino_config.lora_spi_dev == "waveshare-usb") {
+        // No reliable per-unit USB serial number to derive a MAC from here
+        // (unlike ch341 sticks, which get one from their USB descriptor) --
+        // users must set MACAddress: explicitly in config.yaml's General:
+        // section, same as any other device with no hardware MAC source.
+        try {
+            waveshareUsbHal = new WaveshareUsbHal(portduino_config.lora_serial_port);
+        } catch (std::exception &e) {
+            std::cerr << e.what() << std::endl;
+            std::cerr << "Could not initialize Waveshare USB-LoRa bridge on '" << portduino_config.lora_serial_port
+                       << "'!" << std::endl;
+            exit(EXIT_FAILURE);
+        }
     }
 
     getMacAddr(dmac);
@@ -594,7 +608,8 @@ void portduinoSetup()
     for (const auto *i : portduino_config.all_pins) {
         // In the case of a ch341 Lora device, we don't want to touch the system GPIO lines for Lora
         // Those GPIO are handled in our usermode driver instead.
-        if (i->config_section == "Lora" && portduino_config.lora_spi_dev == "ch341") {
+        if (i->config_section == "Lora" &&
+            (portduino_config.lora_spi_dev == "ch341" || portduino_config.lora_spi_dev == "waveshare-usb")) {
             continue;
         }
         if (i->enabled) {
@@ -613,7 +628,8 @@ void portduinoSetup()
     for (auto i : portduino_config.extra_pins) {
         // In the case of a ch341 Lora device, we don't want to touch the system GPIO lines for Lora
         // Those GPIO are handled in our usermode driver instead.
-        if (i.config_section == "Lora" && portduino_config.lora_spi_dev == "ch341") {
+        if (i.config_section == "Lora" &&
+            (portduino_config.lora_spi_dev == "ch341" || portduino_config.lora_spi_dev == "waveshare-usb")) {
             continue;
         }
         if (i.enabled) {
@@ -660,7 +676,8 @@ void portduinoSetup()
     for (auto i : portduino_config.extra_pins) {
         // In the case of a ch341 Lora device, we don't want to touch the system GPIO lines for Lora
         // Those GPIO are handled in our usermode driver instead.
-        if (i.config_section == "Lora" && portduino_config.lora_spi_dev == "ch341") {
+        if (i.config_section == "Lora" &&
+            (portduino_config.lora_spi_dev == "ch341" || portduino_config.lora_spi_dev == "waveshare-usb")) {
             continue;
         }
         if (i.enabled && i.default_high) {
@@ -670,7 +687,8 @@ void portduinoSetup()
     }
 
     // Only initialize the radio pins when dealing with real, kernel controlled SPI hardware
-    if (portduino_config.lora_spi_dev != "" && portduino_config.lora_spi_dev != "ch341") {
+    if (portduino_config.lora_spi_dev != "" && portduino_config.lora_spi_dev != "ch341" &&
+        portduino_config.lora_spi_dev != "waveshare-usb") {
         SPI.begin(portduino_config.lora_spi_dev.c_str());
     }
 
@@ -843,9 +861,10 @@ bool loadConfig(const char *configPath)
             portduino_config.lora_usb_serial_num = yamlConfig["Lora"]["USB_Serialnum"].as<std::string>("");
             portduino_config.lora_usb_pid = yamlConfig["Lora"]["USB_PID"].as<int>(0x5512);
             portduino_config.lora_usb_vid = yamlConfig["Lora"]["USB_VID"].as<int>(0x1A86);
+            portduino_config.lora_serial_port = yamlConfig["Lora"]["SerialPort"].as<std::string>("");
 
             portduino_config.lora_spi_dev = yamlConfig["Lora"]["spidev"].as<std::string>("spidev0.0");
-            if (portduino_config.lora_spi_dev != "ch341") {
+            if (portduino_config.lora_spi_dev != "ch341" && portduino_config.lora_spi_dev != "waveshare-usb") {
                 portduino_config.lora_spi_dev = "/dev/" + portduino_config.lora_spi_dev;
                 if (portduino_config.lora_spi_dev.length() == 14) {
                     int x = portduino_config.lora_spi_dev.at(11) - '0';
