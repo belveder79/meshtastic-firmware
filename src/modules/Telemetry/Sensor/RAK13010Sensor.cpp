@@ -5,6 +5,11 @@
 #include "../mesh/generated/meshtastic/telemetry.pb.h"
 #include "RAK13010Sensor.h"
 #include "TelemetrySensor.h"
+#include "concurrency/LockGuard.h"
+#include "mesh/Throttle.h"
+
+#include <algorithm>
+#include <vector>
 
 // example largely taken from
 // https://github.com/RAKWireless/WisBlock/tree/master/examples/common/IO/RAK13010_SDI_12_BUS
@@ -235,8 +240,37 @@ bool RAK13010Sensor::initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev)
   // Start Sweep of SDI-bus and add sensors found
   ScanAddressSpace();
 
+  // If a GILL WindSonic was found, start the background poller that keeps the rolling
+  // gust/lull buffer fed (see ReadWindSonicOnce()/windPollTaskTrampoline() above).
+  int windSonicCount = 0;
+  for (auto it : m_sensors)
+  {
+    if (it.second->getType() == SDISensorType::WINDSONIC)
+    {
+      if (windSonicCount == 0)
+        m_windSonicAddress = it.first;
+      windSonicCount++;
+    }
+  }
+  if (windSonicCount > 1)
+    LOG_WARN("RAK13010: %d WindSonic sensors found, only polling address %c", windSonicCount, m_windSonicAddress);
+  if (m_windSonicAddress != 0)
+  {
+    LOG_DEBUG("RAK13010: starting background WindSonic poller on address %c", m_windSonicAddress);
+    xTaskCreate(windPollTaskTrampoline, "wind_poll", 4096, this, 1, &m_windTaskHandle);
+  }
+
   // indicate that we are good if the # of sensors is > 0
   return m_sensors.size() > 0;
+}
+
+// Response to M!/M1! is "atttn": address, ttt = seconds until measurement ready, n = field count.
+static int parseMeasurementTimeoutSeconds(const String &sdiMsgStr, bool log = 1)
+{
+  int ts = atoi(sdiMsgStr.substring(1, 4).c_str());
+  if(log)
+    LOG_DEBUG("Timeout value is %d seconds (%s)", ts, sdiMsgStr.substring(1, 4).c_str());
+  return ts;
 }
 
 int getIndices(const String sdiMsgStr, const int expected, int &idx0, int &idx1, int &idx2, int &idx3, int &idx4, int& idx5)
@@ -287,8 +321,12 @@ int getIndices(const String sdiMsgStr, const int expected, int &idx0, int &idx1,
         return expected;
 }
 
-bool RAK13010Sensor::ReadData() 
+bool RAK13010Sensor::ReadData()
 {
+  // Serialize against the background WindSonic poller (windPollTaskTrampoline()), which
+  // drives the same m_SDI12 bus object from a different task.
+  concurrency::LockGuard busLock(&m_sdiBusLock);
+
   // flag that reading any sensor was ok
   bool anyReadOk = false;
 
@@ -302,7 +340,13 @@ bool RAK13010Sensor::ReadData()
     // get type of sensor
     SDISensorType sdiSensorType = sdiSensor->getType();
 
-    // RUN ENTIRE DATA QUERY 
+    // WindSonic is polled separately by the background task (ReadWindSonicOnce(), see
+    // below) so it can run at close to its own natural cadence instead of only at
+    // telemetry-broadcast time; getMetrics() reads its buffered samples directly.
+    if (sdiSensorType == SDISensorType::WINDSONIC)
+      continue;
+
+    // RUN ENTIRE DATA QUERY
 
     uint8_t serialMsgRflag = 3;
     boolean sdiMsgReady = false;
@@ -351,9 +395,7 @@ bool RAK13010Sensor::ReadData()
           // this means that the timeout should be 5 seconds until requesting!
           if(sdiMsgStr.length() >= 5)
           {
-            int ts = atoi(sdiMsgStr.substring(1,4).c_str());
-            LOG_DEBUG("Timeout-1 value is %d seconds (%s)",ts,sdiMsgStr.substring(1,4).c_str());
-            measurementTimeout0 = 1000 * ts;
+            measurementTimeout0 = 1000 * parseMeasurementTimeoutSeconds(sdiMsgStr);
           }
           serialMsgRflag = 5;
         }
@@ -470,9 +512,7 @@ bool RAK13010Sensor::ReadData()
         {
           if(sdiMsgStr.length() >= 5)
           {
-            int ts = atoi(sdiMsgStr.substring(1,4).c_str());
-            LOG_DEBUG("Timeout-1 value is %d seconds (%s)",ts,sdiMsgStr.substring(1,4).c_str());
-            measurementTimeout1 = 1000 * ts;
+            measurementTimeout1 = 1000 * parseMeasurementTimeoutSeconds(sdiMsgStr);
           }
 
           serialMsgRflag = 13;
@@ -640,11 +680,196 @@ bool RAK13010Sensor::ReadData()
   return anyReadOk;
 }
 
+// ---- Background WindSonic polling ----------------------------------------------------
+//
+// GILL_CONTINUOUS_AVG_POLAR == 0 path only: the sensor's own onboard R2! averaging mode
+// is known-broken against our hardware (see commit 1e45c22ac), so instead we poll plain
+// instantaneous M!+D0! queries from a dedicated task and compute gust/lull ourselves from
+// a rolling buffer of samples. This mirrors ReedCounterSensor's xTaskCreate precedent
+// (RAK_4631 branch) for background sensor polling.
+//
+// m_sdiBusLock serializes this task's queries against ReadData()'s Stevens-only sweep
+// (still called synchronously from getMetrics()), since both drive the same shared,
+// non-thread-safe m_SDI12 bus object. m_windLock separately protects m_windBuffer, which
+// this task writes to and getMetrics()/getWindGust()/getWindLull() read from.
+
+bool RAK13010Sensor::ReadWindSonicOnce(char address, WindSample &out, uint32_t &timeoutMsUsed)
+{
+  uint8_t serialMsgRflag = 3;
+  boolean sdiMsgReady = false;
+  String sdiMsgStr = "";
+
+  int measurementTimeoutMs = 1000; // default; overwritten by the sensor's own M! response
+  int timeoutCnt = 10000;
+
+  while (serialMsgRflag && timeoutCnt-- > 0)
+  {
+    int avail = m_SDI12->available();
+    if (avail < 0)
+    {
+      m_SDI12->clearBuffer(); // Buffer is full, clear.
+    }
+    else if (avail > 0)
+    {
+      for (int a = 0; a < avail; a++)
+      {
+        char inByte2 = m_SDI12->read();
+        if (inByte2 == '\n')
+        {
+          sdiMsgReady = true;
+        }
+        else
+        {
+          sdiMsgStr += String(inByte2);
+        }
+      }
+    }
+
+    if (sdiMsgReady)
+    {
+#if GILL_DEBUG_READ      
+      LOG_DEBUG("<<<< %s", sdiMsgStr.c_str());
+#endif
+      if (serialMsgRflag == 4)
+      {
+        if (sdiMsgStr.length() >= 5)
+          measurementTimeoutMs = 1000 * parseMeasurementTimeoutSeconds(sdiMsgStr, GILL_DEBUG_READ);
+        serialMsgRflag = 5;
+      }
+      if (serialMsgRflag == 6)
+      {
+        int idx0, idx1, idx2, idx3, idx4, idx5;
+        getIndices(sdiMsgStr, 3, idx0, idx1, idx2, idx3, idx4, idx5);
+        // result of D0! looks like a+083+000.02+00#: direction, magnitude, status
+        out.direction = atoi(sdiMsgStr.substring(idx0 + 1, idx1).c_str());
+        out.speed = atof(sdiMsgStr.substring(idx1 + 1, idx2).c_str());
+        out.status = atoi(sdiMsgStr.substring(idx2 + 1, idx3).c_str());
+#if GILL_DEBUG_READ
+        LOG_DEBUG("wind dir: %u - speed: %f - status: %u", out.direction, out.speed, out.status);
+#endif
+        serialMsgRflag = 0; // done
+      }
+
+      sdiMsgReady = false;
+      sdiMsgStr = "";
+    }
+
+    if (serialMsgRflag == 3)
+    {
+      String cmd(String(address) + "M!");
+      m_SDI12->sendCommand(cmd);
+#if GILL_DEBUG_READ      
+      LOG_DEBUG(">>>> %s", cmd.c_str());
+#endif
+      serialMsgRflag = 4;
+    }
+    if (serialMsgRflag == 5)
+    {
+      serialMsgRflag = 6;
+      vTaskDelay(pdMS_TO_TICKS(measurementTimeoutMs)); // sensor-reported delay from the M! response
+      String cmd(String(address) + "D0!");
+      m_SDI12->sendCommand(cmd);
+#if GILL_DEBUG_READ
+      LOG_DEBUG(">>>> %s", cmd.c_str());
+#endif
+      m_SDI12->clearBuffer();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+
+  timeoutMsUsed = measurementTimeoutMs;
+  return timeoutCnt > 0;
+}
+
+void RAK13010Sensor::pushWindSample(const WindSample &s)
+{
+  concurrency::LockGuard g(&m_windLock);
+  m_windBuffer.push_back(s);
+  while (!m_windBuffer.empty() && !Throttle::isWithinTimespanMs(m_windBuffer.front().timestampMs, WIND_BUFFER_WINDOW_MS))
+    m_windBuffer.pop_front();
+}
+
+bool RAK13010Sensor::computeGustLull(bool wantGust, float &out)
+{
+  concurrency::LockGuard g(&m_windLock);
+  std::vector<float> speeds;
+  // m_windBuffer is time-ordered oldest -> newest, so walking backwards lets us stop as
+  // soon as we leave the 60s window instead of scanning the whole 300s buffer.
+  for (auto it = m_windBuffer.rbegin(); it != m_windBuffer.rend(); ++it)
+  {
+    if (!Throttle::isWithinTimespanMs(it->timestampMs, WIND_GUSTLULL_WINDOW_MS))
+      break;
+    speeds.push_back(it->speed);
+  }
+  if (speeds.empty())
+    return false;
+
+  std::sort(speeds.begin(), speeds.end());
+  size_t n = std::min(speeds.size(), std::max<size_t>(1, (size_t)(speeds.size() * WIND_GUSTLULL_FRACTION)));
+  float sum = 0;
+  for (size_t i = 0; i < n; i++)
+    sum += wantGust ? speeds[speeds.size() - 1 - i] : speeds[i];
+  out = sum / n;
+  return true;
+}
+
+bool RAK13010Sensor::getWindGust(float &out)
+{
+  return computeGustLull(true, out);
+}
+
+bool RAK13010Sensor::getWindLull(float &out)
+{
+  return computeGustLull(false, out);
+}
+
+void RAK13010Sensor::windPollTaskTrampoline(void *arg)
+{
+  RAK13010Sensor *self = static_cast<RAK13010Sensor *>(arg);
+  uint32_t lastPollStartMs = 0;
+  while (true)
+  {
+    // Cap the loop to at most one measurement per second, regardless of how quickly the
+    // sensor's own M!/D0! round trip completes -- if it's slower than 1s (the common
+    // case; see the M!-timeout note above ReadWindSonicOnce()), this simply has no effect
+    // and each cycle runs back-to-back at whatever cadence the hardware allows.
+    if (lastPollStartMs != 0 && Throttle::isWithinTimespanMs(lastPollStartMs, 1000))
+    {
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
+    }
+    lastPollStartMs = millis();
+
+    WindSample s{};
+    uint32_t timeoutMsUsed = 0;
+    bool ok;
+    {
+      concurrency::LockGuard bus(&self->m_sdiBusLock);
+      ok = self->ReadWindSonicOnce(self->m_windSonicAddress, s, timeoutMsUsed);
+    }
+    if (ok)
+    {
+      s.timestampMs = millis();
+      self->pushWindSample(s);
+    }
+    else
+    {
+      LOG_WARN("RAK13010: WindSonic read failed, retrying");
+      vTaskDelay(pdMS_TO_TICKS(250)); // backoff, avoid busy-looping a wedged/unplugged sensor
+    }
+  }
+}
+
 bool RAK13010Sensor::getMetrics(meshtastic_Telemetry *measurement)
 {
-  bool dataRead = ReadData();
-  if(dataRead)
-  {   
+  bool anyOk = false;
+
+  // Stevens (soil probe) path: unchanged, still a synchronous SDI-12 sweep. WindSonic
+  // entries are skipped inside ReadData() now (see above), so this only touches Stevens.
+  bool stevensDataRead = ReadData();
+  if (stevensDataRead)
+  {
     // run through all registered sensors
     for(auto it : m_sensors)
     {
@@ -654,81 +879,84 @@ bool RAK13010Sensor::getMetrics(meshtastic_Telemetry *measurement)
       SDISensor* sdiSensor = it.second;
       // get type of sensor
       SDISensorType sdiSensorType = sdiSensor->getType();
-      switch(sdiSensorType)
+      if (sdiSensorType != SDISensorType::STEVENS)
+        continue;
+
+      // maximum is 4 sensors for stephenswaters
+      Stevens* sensorreadings = reinterpret_cast<Stevens*>(sdiSensor);
+      if(sensorreadings->m_readOK)
       {
-        case SDISensorType::STEVENS:
-        {       
-          // maximum is 4 sensors for stephenswaters
-          Stevens* sensorreadings = reinterpret_cast<Stevens*>(sdiSensor);  
-          if(sensorreadings->m_readOK)
+        anyOk = true;
+        // 01 is already occupied, so use another definition
+        if(measurement->variant.environment_metrics.has_swhp_soil_temperature_01)
+        {
+          // 02 is already occupied, so use another definition
+          if(measurement->variant.environment_metrics.has_swhp_soil_temperature_02)
           {
-            // 01 is already occupied, so use another definition
-            if(measurement->variant.environment_metrics.has_swhp_soil_temperature_01)
+            // 03 is already occupied, so use another definition
+            if(measurement->variant.environment_metrics.has_swhp_soil_temperature_03)
             {
-              // 02 is already occupied, so use another definition
-              if(measurement->variant.environment_metrics.has_swhp_soil_temperature_02)
-              {
-                // 03 is already occupied, so use another definition
-                if(measurement->variant.environment_metrics.has_swhp_soil_temperature_03)
-                {
-                  measurement->variant.environment_metrics.has_swhp_soil_temperature_04 = true;
-                  measurement->variant.environment_metrics.has_swhp_soil_moisture_04 = true;
-                  measurement->variant.environment_metrics.swhp_soil_temperature_04 = sensorreadings->m_temperature_G;
-                  measurement->variant.environment_metrics.swhp_soil_moisture_04 = sensorreadings->m_soil_moisture_F;  
-                }
-                else
-                {
-                  measurement->variant.environment_metrics.has_swhp_soil_temperature_03 = true;
-                  measurement->variant.environment_metrics.has_swhp_soil_moisture_03 = true;
-                  measurement->variant.environment_metrics.swhp_soil_temperature_03 = sensorreadings->m_temperature_G;
-                  measurement->variant.environment_metrics.swhp_soil_moisture_03 = sensorreadings->m_soil_moisture_F;                
-                }
-              }
-              else
-              {
-                measurement->variant.environment_metrics.has_swhp_soil_temperature_02 = true;
-                measurement->variant.environment_metrics.has_swhp_soil_moisture_02 = true;
-                measurement->variant.environment_metrics.swhp_soil_temperature_02 = sensorreadings->m_temperature_G;
-                measurement->variant.environment_metrics.swhp_soil_moisture_02 = sensorreadings->m_soil_moisture_F;                
-              }
+              measurement->variant.environment_metrics.has_swhp_soil_temperature_04 = true;
+              measurement->variant.environment_metrics.has_swhp_soil_moisture_04 = true;
+              measurement->variant.environment_metrics.swhp_soil_temperature_04 = sensorreadings->m_temperature_G;
+              measurement->variant.environment_metrics.swhp_soil_moisture_04 = sensorreadings->m_soil_moisture_F;
             }
             else
             {
-              measurement->variant.environment_metrics.has_swhp_soil_temperature_01 = true;
-              measurement->variant.environment_metrics.has_swhp_soil_moisture_01 = true;
-              measurement->variant.environment_metrics.swhp_soil_temperature_01 = sensorreadings->m_temperature_G;
-              measurement->variant.environment_metrics.swhp_soil_moisture_01 = sensorreadings->m_soil_moisture_F;
+              measurement->variant.environment_metrics.has_swhp_soil_temperature_03 = true;
+              measurement->variant.environment_metrics.has_swhp_soil_moisture_03 = true;
+              measurement->variant.environment_metrics.swhp_soil_temperature_03 = sensorreadings->m_temperature_G;
+              measurement->variant.environment_metrics.swhp_soil_moisture_03 = sensorreadings->m_soil_moisture_F;
             }
           }
-          break;
-        }
-        case SDISensorType::WINDSONIC:
-        {
-          WindSonic* sensorreadings = reinterpret_cast<WindSonic*>(sdiSensor);  
-          if(sensorreadings->m_readOK)
+          else
           {
-            measurement->variant.environment_metrics.has_wind_direction = true;
-            measurement->variant.environment_metrics.has_wind_speed = true;
-
-            measurement->variant.environment_metrics.wind_direction = sensorreadings->m_direction;
-            measurement->variant.environment_metrics.wind_speed = sensorreadings->m_magnitude;
-#if GILL_CONTINUOUS_AVG_POLAR
-            measurement->variant.environment_metrics.has_wind_gust = true;
-            measurement->variant.environment_metrics.has_wind_lull = true;
-
-            measurement->variant.environment_metrics.wind_gust= sensorreadings->m_magmax;
-            measurement->variant.environment_metrics.wind_lull = (float) sensorreadings->m_dirmax; // reuse lull for direction
-#endif
+            measurement->variant.environment_metrics.has_swhp_soil_temperature_02 = true;
+            measurement->variant.environment_metrics.has_swhp_soil_moisture_02 = true;
+            measurement->variant.environment_metrics.swhp_soil_temperature_02 = sensorreadings->m_temperature_G;
+            measurement->variant.environment_metrics.swhp_soil_moisture_02 = sensorreadings->m_soil_moisture_F;
           }
-          break;
         }
-        default:
-          ;;
+        else
+        {
+          measurement->variant.environment_metrics.has_swhp_soil_temperature_01 = true;
+          measurement->variant.environment_metrics.has_swhp_soil_moisture_01 = true;
+          measurement->variant.environment_metrics.swhp_soil_temperature_01 = sensorreadings->m_temperature_G;
+          measurement->variant.environment_metrics.swhp_soil_moisture_01 = sensorreadings->m_soil_moisture_F;
+        }
       }
     }
-    return true;
   }
-  return false;
+
+  // WindSonic path: read the latest sample straight from the background poller's buffer
+  // instead of independently querying SDI-12 (that bus is now solely owned by the
+  // background task + the Stevens sweep above, serialized via m_sdiBusLock).
+  {
+    concurrency::LockGuard g(&m_windLock);
+    if (!m_windBuffer.empty())
+    {
+      const WindSample &latest = m_windBuffer.back();
+      measurement->variant.environment_metrics.has_wind_direction = true;
+      measurement->variant.environment_metrics.has_wind_speed = true;
+      measurement->variant.environment_metrics.wind_direction = latest.direction;
+      measurement->variant.environment_metrics.wind_speed = latest.speed;
+      anyOk = true;
+    }
+  }
+
+  float gust, lull;
+  if (getWindGust(gust))
+  {
+    measurement->variant.environment_metrics.has_wind_gust = true;
+    measurement->variant.environment_metrics.wind_gust = gust;
+  }
+  if (getWindLull(lull))
+  {
+    measurement->variant.environment_metrics.has_wind_lull = true;
+    measurement->variant.environment_metrics.wind_lull = lull;
+  }
+
+  return anyOk;
 }
 
 #endif

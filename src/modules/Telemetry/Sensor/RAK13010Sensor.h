@@ -4,7 +4,9 @@
 
 #include "../mesh/generated/meshtastic/telemetry.pb.h"
 #include "TelemetrySensor.h"
+#include "concurrency/Lock.h"
 
+#include <deque>
 #include <map>
 
 #include "RAK13010_SDI12.h"
@@ -15,6 +17,13 @@ class RAK13010Sensor : public TelemetrySensor
     RAK13010Sensor();
     virtual bool getMetrics(meshtastic_Telemetry *measurement) override;
     virtual bool initDevice(TwoWire *bus, ScanI2C::FoundDevice *dev) override;
+
+    // Gust/lull: average of the top/bottom WIND_GUSTLULL_FRACTION of samples within the
+    // trailing WIND_GUSTLULL_WINDOW_MS. Returns false if no sample has landed in that
+    // window yet (e.g. right after boot).
+    bool getWindGust(float &out);
+    bool getWindLull(float &out);
+
   private:
 
    typedef enum {
@@ -74,6 +83,34 @@ class RAK13010Sensor : public TelemetrySensor
     void ScanAddressSpace();
     std::map<char,SDISensor*> m_sensors;
 
+    // ---- Background WindSonic polling (GILL_CONTINUOUS_AVG_POLAR == 0 path: plain
+    // instantaneous M!+D0! queries, polled as fast as the sensor allows, with gust/lull
+    // computed here in firmware instead of relying on the sensor's own -- broken, on our
+    // hardware -- R2! averaging mode). See src/modules/Telemetry/Sensor/RAK13010Sensor.cpp
+    // for the full design rationale.
+
+    struct WindSample {
+        uint32_t timestampMs;
+        float speed;
+        uint16_t direction;
+        uint8_t status;
+    };
+
+    static constexpr uint32_t WIND_BUFFER_WINDOW_MS = 300000;   // 300s FIFO retention
+    static constexpr uint32_t WIND_GUSTLULL_WINDOW_MS = 60000;  // 60s gust/lull window
+    static constexpr float WIND_GUSTLULL_FRACTION = 0.10f;      // top/bottom 10%, min 1 sample
+
+    std::deque<WindSample> m_windBuffer; // time-pruned FIFO; single producer (background task)
+    concurrency::Lock m_windLock;        // protects m_windBuffer
+    concurrency::Lock m_sdiBusLock;      // protects m_SDI12 (shared between ReadData() and the
+                                          // background wind task -- see RAK13010Sensor.cpp)
+    TaskHandle_t m_windTaskHandle = nullptr;
+    char m_windSonicAddress = 0; // SDI-12 address of the polled WindSonic; 0 = none found
+
+    static void windPollTaskTrampoline(void *arg);
+    bool ReadWindSonicOnce(char address, WindSample &out, uint32_t &timeoutMsUsed);
+    void pushWindSample(const WindSample &s);
+    bool computeGustLull(bool wantGust, float &out);
 };
 
 #endif
