@@ -363,12 +363,13 @@ class WaveshareUsbHal : public RadioLibHal
         startPolling();
     }
 
+    // Only edits the map; the poll thread stays alive. Stopping/joining it here
+    // deadlocked: RadioLib detaches from both the main thread (setStandby) and
+    // from inside the ISR callback running on the poll thread itself.
     void detachInterrupt(uint32_t interruptNum) override
     {
         std::lock_guard<std::mutex> lock(pollMutex);
         interrupts.erase(interruptNum);
-        if (interrupts.empty())
-            stopPollingLocked();
     }
 
     void delay(unsigned long ms) override { delayMicroseconds(ms * 1000); }
@@ -437,27 +438,11 @@ class WaveshareUsbHal : public RadioLibHal
         pollThread = std::thread([this]() { pollLoop(); });
     }
 
+    // Only called from term()/destructor, never from the poll thread.
     void stopPolling()
     {
-        std::lock_guard<std::mutex> lock(pollMutex);
-        stopPollingLocked();
-    }
-
-    void stopPollingLocked()
-    {
-        if (!polling.exchange(false) || !pollThread.joinable())
-            return;
-        if (std::this_thread::get_id() == pollThread.get_id()) {
-            // Called from inside the poll thread itself -- e.g. RadioLib's
-            // interrupt callback (invoked from pollLoop() below) calling
-            // back into detachInterrupt(). Joining ourselves would throw
-            // "Resource deadlock avoided" and crash. Detach instead; the
-            // thread is about to return on its own since `polling` is now
-            // false, and nothing needs to wait for that.
-            pollThread.detach();
-        } else {
+        if (polling.exchange(false) && pollThread.joinable())
             pollThread.join();
-        }
     }
 
     void pollLoop()
@@ -466,24 +451,35 @@ class WaveshareUsbHal : public RadioLibHal
         // is a serial round trip, and LoRa RX/TX-done latency benefits from
         // catching the DIO1 edge promptly. Tune against real hardware.
         while (polling.load()) {
-            std::vector<std::pair<uint32_t, InterruptEntry *>> toCheck;
+            std::vector<uint32_t> pins;
             {
                 std::lock_guard<std::mutex> lock(pollMutex);
                 for (auto &kv : interrupts)
-                    toCheck.push_back({kv.first, &kv.second});
+                    pins.push_back(kv.first);
             }
-            for (auto &kv : toCheck) {
-                uint32_t pin = kv.first;
-                InterruptEntry *entry = kv.second;
+            for (uint32_t pin : pins) {
                 uint32_t state = digitalRead(pin);
-                if (entry->previousState != 255 && entry->previousState != state) {
-                    bool rising = (entry->previousState == 0 && state == 1);
-                    bool matches = (rising && entry->mode == WAVESHARE_RISING) ||
-                                   (!rising && entry->mode == WAVESHARE_FALLING);
-                    if (matches && entry->callback)
-                        entry->callback();
+                void (*callback)(void) = nullptr;
+                {
+                    // Re-look-up by pin: the entry may have been erased (or
+                    // re-created) while digitalRead() was in flight.
+                    std::lock_guard<std::mutex> lock(pollMutex);
+                    auto it = interrupts.find(pin);
+                    if (it == interrupts.end())
+                        continue;
+                    InterruptEntry &entry = it->second;
+                    if (entry.previousState != 255 && entry.previousState != state) {
+                        bool rising = (entry.previousState == 0 && state == 1);
+                        bool matches = (rising && entry.mode == WAVESHARE_RISING) ||
+                                       (!rising && entry.mode == WAVESHARE_FALLING);
+                        if (matches)
+                            callback = entry.callback;
+                    }
+                    entry.previousState = (uint8_t)state;
                 }
-                entry->previousState = (uint8_t)state;
+                // Outside pollMutex: the ISR calls straight back into detachInterrupt().
+                if (callback)
+                    callback();
             }
             usleep(2000); // ~500Hz poll
         }
