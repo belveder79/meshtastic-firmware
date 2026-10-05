@@ -52,6 +52,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <termios.h>
@@ -62,7 +63,6 @@
 
 #ifdef __APPLE__
 #include <IOKit/serial/ioss.h>
-#include <sys/ioctl.h>
 #endif
 
 #define WAVESHARE_PIN_NRESET (0)
@@ -87,44 +87,11 @@
 class WaveshareSerialTransport
 {
   public:
-    explicit WaveshareSerialTransport(const std::string &port, uint32_t baud = 921600) : baud(baud)
+    explicit WaveshareSerialTransport(const std::string &port, uint32_t baud = 921600) : path(port), baud(baud)
     {
-        fd = open(port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
-        if (fd < 0) {
-            throw std::runtime_error("Could not open serial port " + port);
-        }
-
-        if (tcgetattr(fd, &tty) != 0) {
-            close(fd);
-            throw std::runtime_error("tcgetattr failed on " + port);
-        }
-        cfmakeraw(&tty);
-        tty.c_cflag |= (CLOCAL | CREAD);
-        tty.c_cflag &= ~PARENB;
-        tty.c_cflag &= ~CSTOPB;
-        tty.c_cflag &= ~CSIZE;
-        tty.c_cflag |= CS8;
-        tty.c_cc[VMIN] = 0;
-        tty.c_cc[VTIME] = 0;
-
-#ifdef __APPLE__
-        // macOS termios only defines standard rates up to B230400; 921600
-        // needs the IOSSIOSPEED ioctl instead (same approach pyserial uses
-        // on this platform).
-        cfsetspeed(&tty, B9600);
-#else
-        cfsetspeed(&tty, baud);
-#endif
-        if (!applyLineSettings()) {
-            close(fd);
-            throw std::runtime_error("failed to set " + std::to_string(baud) + " baud on " + port);
-        }
-        // Clear O_NONBLOCK now that the port is configured -- reads below
-        // use select() for timeouts instead.
-        int flags = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-
-        tcflush(fd, TCIOFLUSH);
+        std::string err = openPort();
+        if (!err.empty())
+            throw std::runtime_error(err);
     }
 
     ~WaveshareSerialTransport()
@@ -159,7 +126,9 @@ class WaveshareSerialTransport
             // is still waiting on). Get both sides back to a frame boundary
             // before anyone sends again.
             resync();
-            if (attempt < attempts)
+            // Logged only while the link was healthy: with the device gone,
+            // the 500Hz poll thread would otherwise flood the log.
+            if (attempt < attempts && !hadError)
                 LOG_WARN("WaveshareUsbHal: cmd 0x%02x: %s, retrying", cmd, why.c_str());
         }
         bool firstError = !hadError;
@@ -170,6 +139,37 @@ class WaveshareSerialTransport
     }
 
     bool inError() const { return hadError; }
+
+    // Blocks (up to timeoutMs) until the bridge answers PING, reopening the
+    // port as needed. For the LoRa recovery path: re-initing the radio while
+    // a stick is still re-enumerating on USB just fails, and meshtasticd
+    // then reboots instead of riding it out.
+    bool waitForLink(int timeoutMs)
+    {
+        static const int STEP_MS = 250;
+        for (int waited = 0;; waited += STEP_MS) {
+            {
+                std::lock_guard<std::mutex> lock(ioMutex);
+                if (fd < 0)
+                    tryReopen();
+                if (fd >= 0) {
+                    uint8_t resp[8];
+                    uint16_t respLen = 0;
+                    std::string why;
+                    if (transactOnce(0x00 /* PING */, nullptr, 0, resp, sizeof(resp), &respLen, why)) {
+                        if (hadError)
+                            logDeviceState("link back");
+                        hadError = false;
+                        return true;
+                    }
+                    resync();
+                }
+            }
+            if (waited >= timeoutMs)
+                return false;
+            usleep(STEP_MS * 1000);
+        }
+    }
 
   private:
     bool transactOnce(uint8_t cmd, const uint8_t *outPayload, uint16_t outLen, uint8_t *inPayload, uint16_t maxInLen,
@@ -193,8 +193,12 @@ class WaveshareSerialTransport
         }
         frame[frameLen++] = crc;
 
+        if (fd < 0) {
+            why = "port not open";
+            return false;
+        }
         if (!writeAll(frame, frameLen)) {
-            why = "write failed";
+            why = std::string("write failed: ") + strerror(errno);
             return false;
         }
 
@@ -274,6 +278,76 @@ class WaveshareSerialTransport
                  (f & 0x10) ? " SFT" : "", (f & 0x08) ? " POR/PDR" : "", (f & 0x04) ? " PIN" : "");
     }
 
+    // Opens and configures `path`; returns an error message, or "" on
+    // success. Used for the initial open and to reopen after the device
+    // dropped off USB (the old fd is dead for good at that point).
+    std::string openPort()
+    {
+        fd = open(path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+        if (fd < 0)
+            return "Could not open serial port " + path + ": " + strerror(errno);
+
+        if (tcgetattr(fd, &tty) != 0) {
+            closePort();
+            return "tcgetattr failed on " + path;
+        }
+        cfmakeraw(&tty);
+        tty.c_cflag |= (CLOCAL | CREAD);
+        tty.c_cflag &= ~PARENB;
+        tty.c_cflag &= ~CSTOPB;
+        tty.c_cflag &= ~CSIZE;
+        tty.c_cflag |= CS8;
+        tty.c_cc[VMIN] = 0;
+        tty.c_cc[VTIME] = 0;
+
+#ifdef __APPLE__
+        // macOS termios only defines standard rates up to B230400; 921600
+        // needs the IOSSIOSPEED ioctl instead (same approach pyserial uses
+        // on this platform).
+        cfsetspeed(&tty, B9600);
+#else
+        cfsetspeed(&tty, baud);
+#endif
+        if (!applyLineSettings()) {
+            closePort();
+            return "failed to set " + std::to_string(baud) + " baud on " + path;
+        }
+        // Keep other (non-root) processes from opening the port while we
+        // hold it -- see reapplyLineSettings() for what they'd do to us.
+        if (ioctl(fd, TIOCEXCL) != 0)
+            std::cerr << "WaveshareUsbHal: TIOCEXCL failed on " << path << ": " << strerror(errno) << std::endl;
+
+        // Clear O_NONBLOCK now that the port is configured -- reads below
+        // use select() for timeouts instead.
+        int flags = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+
+        tcflush(fd, TCIOFLUSH);
+        return "";
+    }
+
+    void closePort()
+    {
+        if (fd >= 0)
+            close(fd);
+        fd = -1;
+    }
+
+    // Called once the fd is known dead. Cheap when the device isn't back
+    // yet (open() just fails), so it's simply retried on every failure.
+    void tryReopen()
+    {
+        closePort();
+        std::string err = openPort();
+        if (err.empty()) {
+            LOG_WARN("WaveshareUsbHal: reopened %s", path.c_str());
+            reopenFailLogged = false;
+        } else if (!reopenFailLogged) {
+            LOG_WARN("WaveshareUsbHal: reopen failed (will keep trying): %s", err.c_str());
+            reopenFailLogged = true;
+        }
+    }
+
     bool applyLineSettings()
     {
         if (tcsetattr(fd, TCSANOW, &tty) != 0)
@@ -286,19 +360,17 @@ class WaveshareSerialTransport
         return true;
     }
 
-    // The CH343 can silently lose its baud rate while the kernel still
-    // believes it is set (observed: MCU up and fine, no replies at all until
-    // the port's speed was changed and changed back). Linux cdc_acm only
-    // sends SET_LINE_CODING when the termios speed actually changes, so
-    // re-applying the same speed does nothing -- bounce through a different
-    // one to force the line coding out to the chip again.
-    void resendLineCoding()
+    // termios belongs to the tty, not to our fd: anything else that opens
+    // the port (seen in the field: a Meshtastic Python client auto-probing
+    // /dev/ttyACM* at 115200) silently changes our baud rate too, after
+    // which the bridge simply stops answering. Re-applying our settings
+    // undoes that.
+    bool reapplyLineSettings()
     {
-        struct termios other = tty;
-        cfsetspeed(&other, B115200);
-        tcsetattr(fd, TCSANOW, &other);
-        if (!applyLineSettings())
-            LOG_WARN("WaveshareUsbHal: failed to re-apply %u baud", (unsigned)baud);
+        if (applyLineSettings())
+            return true;
+        LOG_WARN("WaveshareUsbHal: failed to re-apply %u baud (%s), reopening port", (unsigned)baud, strerror(errno));
+        return false;
     }
 
     // Discards incoming bytes until the line has been quiet for longer than
@@ -306,9 +378,13 @@ class WaveshareSerialTransport
     // parser has abandoned any partial command and any late or half-read
     // response is gone, so the next transact() starts on a frame boundary on
     // both ends. Bounded so a babbling device can't wedge the caller here.
-    // Also re-sends the line coding, in case the CH343 lost its baud rate.
+    // Also re-applies our line settings, in case another process changed them.
     void resync()
     {
+        if (fd < 0) {
+            tryReopen();
+            return;
+        }
         static const int QUIET_MS = 30;
         uint8_t junk[64];
         for (int i = 0; i < 64; ++i) {
@@ -321,7 +397,13 @@ class WaveshareSerialTransport
             if (read(fd, junk, sizeof(junk)) <= 0)
                 break;
         }
-        resendLineCoding();
+        // tcsetattr() failing means the tty itself is gone (USB disconnect:
+        // EIO/ENODEV, or hung up), not just changed settings -- the fd will
+        // never work again, so get a fresh one.
+        if (!reapplyLineSettings()) {
+            tryReopen();
+            return;
+        }
         tcflush(fd, TCIFLUSH);
     }
 
@@ -398,7 +480,9 @@ class WaveshareSerialTransport
     }
 
     int fd = -1;
+    std::string path;
     uint32_t baud;
+    bool reopenFailLogged = false;
     struct termios tty;
     std::mutex ioMutex;
     std::string readFailure;
@@ -433,6 +517,8 @@ class WaveshareUsbHal : public RadioLibHal
     {
         stopPolling();
     }
+
+    bool waitForLink(int timeoutMs) { return transport.waitForLink(timeoutMs); }
 
     void init() override {}
     void term() override { stopPolling(); }

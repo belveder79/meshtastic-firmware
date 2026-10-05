@@ -1207,6 +1207,10 @@ void loop()
                 exit(EXIT_FAILURE);
             }
         }
+        if (portduino_config.lora_spi_dev == "waveshare-usb" && waveshareUsbHal != nullptr &&
+            !waveshareUsbHal->waitForLink(10000)) {
+            LOG_WARN("Waveshare USB-LoRa bridge still not answering after 10s");
+        }
         auto rIf = initLoRa();
         if (rIf) {
             router->addInterface(std::move(rIf));
